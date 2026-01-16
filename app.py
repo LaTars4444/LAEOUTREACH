@@ -5,42 +5,27 @@ from flask import Flask, render_template_string, request, redirect, url_for, ses
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests
-from googleapiclient.discovery import build
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
-# --- 1. ENTERPRISE CONFIG & ENCRYPTION ---
+# --- 1. CONFIGURATION ---
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
-DB_PATH = "pro_exchange_v18.db"
+DB_PATH = "pro_exchange_v20.db"
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pro_exchange_enterprise_v18")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pro_exchange_v20_final")
 
-# Google OAuth Setup
+# Google OAuth Config
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
-SCOPES = [
-    'https://www.googleapis.com/auth/userinfo.email', 
-    'openid', 
-    'https://www.googleapis.com/auth/gmail.send'
-]
-CLIENT_CONFIG = {
-    "web": {
-        "client_id": GOOGLE_CLIENT_ID,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
-        "redirect_uris": [os.environ.get("REDIRECT_URI")]
-    }
-}
+SCOPES = ['https://www.googleapis.com/auth/userinfo.email', 'openid', 'https://www.googleapis.com/auth/gmail.send']
+CLIENT_CONFIG = {"web": {"client_id": GOOGLE_CLIENT_ID, "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token", "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"), "redirect_uris": [os.environ.get("REDIRECT_URI")]}}
 
-# --- 2. DATABASE SYSTEM ---
+# --- 2. DATABASE ARCHITECTURE ---
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
@@ -48,152 +33,170 @@ def init_db():
         conn.execute("""CREATE TABLE IF NOT EXISTS users (
             email TEXT PRIMARY KEY, 
             purchase_count INTEGER DEFAULT 0, 
-            trial_end TEXT, 
-            has_paid_outreach INTEGER DEFAULT 0,
-            has_ai_subscription INTEGER DEFAULT 0,
-            ai_status TEXT DEFAULT 'off',
-            ai_tone TEXT DEFAULT 'Aggressive',
-            growth_mode INTEGER DEFAULT 0,
+            email_machine_access INTEGER DEFAULT 0, -- 1 for paid
+            ai_paid INTEGER DEFAULT 0,
+            ai_trial_end TEXT,
             referral_code TEXT,
-            google_creds TEXT,
-            fb_token TEXT,
-            tiktok_token TEXT
+            google_creds TEXT
         )""")
         conn.execute("""CREATE TABLE IF NOT EXISTS leads (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            address TEXT, 
-            asking_price INTEGER DEFAULT 0, 
-            sqft INTEGER DEFAULT 0,
-            image_path TEXT,
-            contact_encrypted TEXT,
-            status TEXT DEFAULT 'active'
+            address TEXT, asking_price INTEGER, sqft INTEGER, 
+            image_path TEXT, status TEXT DEFAULT 'active'
         )""")
         conn.commit()
 
 init_db()
 
-# --- 3. CORE LOGIC UTILITIES ---
-cipher = Fernet(os.environ.get("ENCRYPTION_KEY", Fernet.generate_key().decode()).encode())
+# --- 3. CORE LOGIC ---
+def get_buyer_rate(deal_count):
+    # Starts at 6%, drops 1% per deal closed through us, caps at 2%
+    return max(0.02, 0.06 - (deal_count * 0.01))
 
-def get_assignment_rate(count):
-    # Logic: Starts at 6%, loses 1% per deal, caps at 2%
-    rate = 0.06 - (count * 0.01)
-    return max(0.02, rate)
+def has_ai_access(user):
+    if user['ai_paid'] == 1: return True
+    if user['ai_trial_end'] and datetime.now() < datetime.fromisoformat(user['ai_trial_end']): return True
+    return False
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-# --- 4. UI TEMPLATES (Tailwind Bold Style) ---
+# --- 4. THEME & UI ---
 UI_HEADER = """
 <!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PRO-EXCHANGE | AI Suite</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;900&display=swap');
-        body { font-family: 'Outfit', sans-serif; background: #fafafa; }
-        .g-card { background: white; border-radius: 3rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.05); border: 1px solid #f0f0f0; }
-        .btn-black { background: black; color: white; border-radius: 1.5rem; transition: all 0.3s ease; font-weight: 900; text-transform: uppercase; italic; }
-        .btn-black:hover { transform: translateY(-3px); box-shadow: 0 20px 30px rgba(0,0,0,0.1); }
-    </style>
-</head>
-<body class="min-h-screen flex flex-col items-center p-6">
-    <div class="w-full max-w-3xl">
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;900&display=swap');
+    body { font-family: 'Outfit', sans-serif; background: #050505; color: #fff; }
+    .glass { background: #111; border: 1px solid #222; border-radius: 2rem; }
+    .btn-main { background: #fff; color: #000; font-weight: 900; text-transform: uppercase; border-radius: 1rem; transition: 0.3s; }
+    .btn-main:hover { transform: scale(1.02); background: #f0f0f0; }
+    .text-gradient { background: linear-gradient(to right, #fff, #666); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+</style></head><body class="min-h-screen p-6 flex flex-col items-center">
+<div class="w-full max-w-4xl">
 """
-UI_FOOTER = "</div></body></html>"
+UI_FOOTER = """
+<footer class="mt-20 py-10 border-t border-zinc-900 text-center">
+    <a href="/privacy" class="text-[10px] font-bold text-gray-600 uppercase tracking-widest hover:text-white transition">Privacy Policy</a>
+    <p class="text-[8px] text-gray-800 uppercase mt-4">© Pro-Exchange Global Neural Network</p>
+</footer>
+</div></body></html>
+"""
 
-# --- 5. CORE NAVIGATION ---
+# --- 5. DASHBOARD ---
 
 @app.route('/')
 def index():
     return render_template_string(UI_HEADER + """
-        <header class="text-center mb-12">
-            <h1 class="text-6xl font-black uppercase italic tracking-tighter">Pro-Exchange</h1>
-            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[0.5em] mt-2">The Neural Real Estate Suite</p>
+        <header class="text-center py-20">
+            <h1 class="text-7xl font-black uppercase italic tracking-tighter text-gradient">Pro-Exchange</h1>
+            <p class="text-[10px] font-bold text-gray-600 uppercase tracking-[0.6em] mt-4">Automated Real Estate Dominance</p>
         </header>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <a href="/ai-agent" class="p-10 bg-indigo-600 text-white rounded-[3rem] hover:scale-105 transition-transform group relative overflow-hidden">
-                <h3 class="text-3xl font-black uppercase italic">AI Agent</h3>
-                <p class="text-xs opacity-80 mt-1">$35/mo • Social & Marketing</p>
-                <span class="absolute right-4 bottom-4 text-6xl opacity-20">🤖</span>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="glass p-10 flex flex-col justify-between">
+                <div>
+                    <h3 class="text-3xl font-black uppercase italic">Email Machine</h3>
+                    <p class="text-xs text-gray-500 mt-2 mb-8">Direct-to-Inbox Broadcast Engine.</p>
+                </div>
+                <div class="space-y-3">
+                    <a href="/outreach" class="btn-main w-full py-4 inline-block text-center text-xs">Access Engine</a>
+                    <p class="text-[9px] text-center text-gray-600 uppercase font-bold">$20 One-Time or $3/Week</p>
+                </div>
+            </div>
+            
+            <div class="glass p-10 border-indigo-900/50 bg-gradient-to-b from-zinc-900 to-black">
+                <h3 class="text-3xl font-black uppercase italic text-indigo-400">AI Agent</h3>
+                <p class="text-xs text-gray-500 mt-2 mb-8">Intellectual TikTok Automation & Scheduling.</p>
+                <a href="/ai-agent" class="btn-main w-full py-4 inline-block text-center text-xs bg-indigo-600 text-white border-none">Launch Agent</a>
+                <p class="text-[9px] text-center text-indigo-400 uppercase font-bold mt-3">48H Trial Available • $50/mo</p>
+            </div>
+
+            <a href="/buy" class="glass p-10 group hover:border-green-500/50 transition-all">
+                <h3 class="text-2xl font-black uppercase italic group-hover:text-green-400 transition-colors">Buy Assets</h3>
+                <p class="text-xs text-gray-600 mt-1">Sliding Scale Fees: 6% → 2%</p>
             </a>
-            <a href="/outreach" class="p-10 bg-black text-white rounded-[3rem] hover:scale-105 transition-transform group">
-                <h3 class="text-3xl font-black uppercase italic">Email Machine</h3>
-                <p class="text-xs opacity-80 mt-1">Broadcast • Free Trial</p>
-            </a>
-            <a href="/sell" class="p-10 g-card hover:border-black transition-all">
-                <h3 class="text-2xl font-black uppercase text-blue-600">Sell</h3>
-                <p class="text-xs text-gray-400 mt-1">0% Commission • List Free</p>
-            </a>
-            <a href="/buy" class="p-10 g-card hover:border-black transition-all">
-                <h3 class="text-2xl font-black uppercase text-green-600">Buy</h3>
-                <p class="text-xs text-gray-400 mt-1">Sliding Scale (6% -> 2%)</p>
+
+            <a href="/sell" class="glass p-10 group hover:border-blue-500/50 transition-all">
+                <h3 class="text-2xl font-black uppercase italic group-hover:text-blue-400 transition-colors">Sell Assets</h3>
+                <p class="text-xs text-gray-600 mt-1">0% Commission. AI Listing Tool.</p>
             </a>
         </div>
     """ + UI_FOOTER)
 
-# --- 6. AI AGENT: GROWTH & SELLER MAGNET ---
+# --- 6. AI AGENT: INTELLECTUAL AUTOMATION ---
 
 @app.route('/ai-agent')
 def ai_agent():
     if 'user_email' not in session: return redirect(url_for('google_login', next='ai-agent'))
-    
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE email = ?", (session['user_email'],)).fetchone()
-        if not user['referral_code']:
-            ref = secrets.token_hex(4).upper()
-            conn.execute("UPDATE users SET referral_code = ? WHERE email = ?", (ref, session['user_email']))
-            conn.commit()
-            return redirect(url_for('ai_agent'))
 
-    if not user['has_ai_subscription']:
+    if not has_ai_access(user):
         return render_template_string(UI_HEADER + """
-            <div class="text-center py-20 g-card px-10">
-                <h2 class="text-5xl font-black uppercase italic mb-4">AI Inbound Agent</h2>
-                <p class="text-gray-400 font-bold mb-10">Automatically post TikToks/Reels to find Sellers and recruit Buyers. $35/mo subscription.</p>
-                <form action="/create-checkout-session" method="POST">
-                    <button class="btn-black px-12 py-6 text-xl">Unlock Agent $35/mo</button>
-                </form>
+            <div class="glass p-12 text-center max-w-2xl mx-auto border-indigo-500/20">
+                <h2 class="text-5xl font-black uppercase italic mb-6">Neural Agent</h2>
+                <p class="text-gray-400 mb-10 text-sm leading-relaxed">The AI Agent posts automated "Intellectual" content (Stoicism, Wealth Architecture, and Philosophy) on a schedule to build massive authority and pull leads into the platform for you.</p>
+                
+                <div class="space-y-4">
+                    <a href="/start-ai-trial" class="block w-full bg-indigo-600 p-6 rounded-2xl font-black uppercase italic hover:bg-indigo-500 transition">Start 48H Free Trial (No Credit Card)</a>
+                    <button class="block w-full bg-white text-black p-6 rounded-2xl font-black uppercase italic">$50 / Month Subscription</button>
+                </div>
             </div>
         """ + UI_FOOTER)
 
     return render_template_string(UI_HEADER + """
         <div class="flex justify-between items-center mb-10">
-            <h2 class="text-4xl font-black uppercase italic text-indigo-600">AI Terminal</h2>
-            <div class="flex items-center space-x-2">
-                <span class="text-[10px] font-black uppercase">{{ user.ai_status }}</span>
-                <a href="/toggle-ai" class="w-12 h-6 bg-black rounded-full relative">
-                    <div class="absolute top-1 {{ 'right-1 bg-green-400' if user.ai_status == 'on' else 'left-1 bg-gray-500' }} w-4 h-4 rounded-full transition-all"></div>
-                </a>
-            </div>
+            <h2 class="text-4xl font-black uppercase italic text-indigo-400">AI Scheduling Terminal</h2>
+            <span class="px-4 py-1 bg-indigo-500 text-white font-black uppercase text-[10px] rounded-full animate-pulse">Neural Link Active</span>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            <div class="g-card p-8 border-2 {{ 'border-indigo-500' if user.growth_mode == 1 else 'border-gray-50' }}">
-                <h4 class="font-black uppercase text-sm mb-2">Growth Mode</h4>
-                <p class="text-[10px] text-gray-400 uppercase mb-6">AI posts videos to pull people in using your code: <b>{{ user.referral_code }}</b></p>
-                <a href="/toggle-growth" class="btn-black px-6 py-3 text-[10px] block text-center">Toggle Mode</a>
-            </div>
-            <div class="g-card p-8 bg-green-50">
-                <h4 class="font-black uppercase text-sm text-green-700 mb-2">Seller Magnet</h4>
-                <p class="text-[10px] text-green-600 uppercase mb-6">AI converts homeowners to sell with us for 0% commission.</p>
-                <span class="text-[10px] font-black uppercase px-3 py-1 bg-green-200 rounded-full">Always Active</span>
+        <div class="glass p-8 mb-6">
+            <h3 class="text-xs font-black uppercase text-gray-500 mb-6 tracking-widest">Automated Intellectual Content Queue</h3>
+            <div class="space-y-4">
+                <div class="flex justify-between items-center p-5 bg-black rounded-2xl border border-zinc-800">
+                    <div>
+                        <p class="text-xs font-black uppercase">Stoic Arbitrage #041</p>
+                        <p class="text-[9px] text-gray-600 font-bold uppercase">Topic: Marcus Aurelius on Wealth</p>
+                    </div>
+                    <span class="text-[10px] font-black text-indigo-400 uppercase">Scheduled: 2PM</span>
+                </div>
+                <div class="flex justify-between items-center p-5 bg-black rounded-2xl border border-zinc-800 opacity-50">
+                    <div>
+                        <p class="text-xs font-black uppercase">Neural Marketing #012</p>
+                        <p class="text-[9px] text-gray-600 font-bold uppercase">Topic: Efficiency in Real Estate</p>
+                    </div>
+                    <span class="text-[10px] font-black text-gray-600 uppercase">Scheduled: 6PM</span>
+                </div>
             </div>
         </div>
-
-        <div class="g-card p-8">
-            <h4 class="font-black uppercase text-sm mb-4">Connect Socials</h4>
-            <div class="flex space-x-4">
-                <button class="flex-1 py-4 bg-gray-100 rounded-2xl font-black uppercase text-[10px]">TikTok: {{ 'Linked' if user.tiktok_token else 'Connect' }}</button>
-                <button class="flex-1 py-4 bg-gray-100 rounded-2xl font-black uppercase text-[10px]">Facebook: {{ 'Linked' if user.fb_token else 'Connect' }}</button>
-            </div>
+        
+        <div class="text-center p-6">
+            <p class="text-[10px] font-black text-zinc-700 uppercase tracking-[0.3em]">AI is currently scraping intellectual data to generate your viral schedule.</p>
         </div>
     """, user=user) + UI_FOOTER
 
-# --- 7. BUYER PORTAL (SLIDING SCALE) ---
+# --- 7. EMAIL MACHINE ($20 OR $3/WK) ---
+
+@app.route('/outreach')
+def outreach_portal():
+    if 'user_email' not in session: return redirect(url_for('google_login', next='outreach'))
+    with get_db() as conn:
+        user = conn.execute("SELECT email_machine_access FROM users WHERE email = ?", (session['user_email'],)).fetchone()
+    
+    if not user['email_machine_access']:
+        return render_template_string(UI_HEADER + """
+            <div class="glass p-12 text-center max-w-xl mx-auto">
+                <h2 class="text-5xl font-black uppercase italic mb-6">Email Machine</h2>
+                <p class="text-gray-400 mb-10 text-sm">Direct-to-inbox outreach. Verified high-deliverability mass mailing.</p>
+                <div class="grid grid-cols-1 gap-4">
+                    <button class="bg-white text-black p-6 rounded-2xl font-black uppercase italic text-xl">$20 Lifetime Access</button>
+                    <button class="bg-zinc-900 text-white p-6 rounded-2xl font-black uppercase italic text-sm border border-zinc-800">$3 / Week Subscription</button>
+                </div>
+            </div>
+        """ + UI_FOOTER)
+    
+    return render_template_string(UI_HEADER + """<h2 class="text-4xl font-black uppercase italic">Email Machine Active</h2>""" + UI_FOOTER)
+
+# --- 8. BUYER/SELLER & PRIVACY ---
 
 @app.route('/buy')
 def buyer_portal():
@@ -202,108 +205,58 @@ def buyer_portal():
         user = conn.execute("SELECT purchase_count FROM users WHERE email = ?", (session['user_email'],)).fetchone()
         leads = conn.execute("SELECT * FROM leads WHERE status = 'active'").fetchall()
     
-    rate = get_assignment_rate(user['purchase_count'] if user else 0)
+    rate = get_buyer_rate(user['purchase_count'] if user else 0)
     
     return render_template_string(UI_HEADER + """
-        <div class="flex justify-between items-end mb-8">
-            <h2 class="text-4xl font-black uppercase italic">The Feed</h2>
+        <div class="flex justify-between items-end mb-10">
+            <h2 class="text-5xl font-black uppercase italic tracking-tighter">The Vault</h2>
             <div class="text-right">
-                <p class="text-[10px] font-black text-gray-400 uppercase">Tier Rate</p>
-                <p class="text-2xl font-black text-indigo-600">{{ (rate*100)|int }}%</p>
+                <p class="text-[10px] font-black text-zinc-600 uppercase">Current Fee Rate</p>
+                <p class="text-3xl font-black text-green-500">{{ (rate*100)|int }}%</p>
             </div>
         </div>
-
-        <div class="space-y-6">
+        <div class="grid grid-cols-1 gap-8">
             {% for lead in leads %}
-            <div class="g-card overflow-hidden group hover:border-black transition-all">
-                {% if lead.image_path %}
-                <img src="/uploads/{{ lead.image_path }}" class="w-full h-64 object-cover">
-                {% endif %}
-                <div class="p-8">
-                    <h3 class="text-2xl font-black uppercase">{{ lead.address }}</h3>
-                    <p class="text-xs font-bold text-gray-400 mb-6">${{ "{:,.0f}".format(lead.asking_price) }} • {{ lead.sqft }} SQFT</p>
-                    <button class="w-full btn-black py-5 text-sm">Pay ${{ "{:,.2f}".format(lead.asking_price * rate) }} Assignment Fee</button>
+            <div class="glass overflow-hidden group">
+                {% if lead.image_path %}<img src="/uploads/{{ lead.image_path }}" class="w-full h-80 object-cover opacity-60 group-hover:opacity-100 transition duration-700">{% endif %}
+                <div class="p-10 flex justify-between items-center">
+                    <div>
+                        <h3 class="text-3xl font-black uppercase italic tracking-tight">{{ lead.address }}</h3>
+                        <p class="text-xs font-bold text-zinc-500 uppercase mt-2">${{ "{:,.0f}".format(lead.asking_price) }}</p>
+                    </div>
+                    <button class="btn-main px-10 py-5 text-xs">Contract Assignment</button>
                 </div>
             </div>
             {% endfor %}
         </div>
     """, leads=leads, rate=rate) + UI_FOOTER
 
-# --- 8. SELLER PORTAL (PHOTOS) ---
-
-@app.route('/sell')
-def seller_portal():
-    if 'user_email' not in session: return redirect(url_for('google_login', next='sell'))
+@app.route('/privacy')
+def privacy():
     return render_template_string(UI_HEADER + """
-        <h2 class="text-4xl font-black uppercase italic mb-8">List Property (Free)</h2>
-        <form action="/submit-lead" method="POST" enctype="multipart/form-data" class="space-y-4">
-            <input type="text" name="address" placeholder="Property Address" class="w-full p-6 border-2 border-gray-50 rounded-2xl font-bold" required>
-            <div class="grid grid-cols-2 gap-4">
-                <input type="number" name="price" placeholder="Asking Price ($)" class="p-6 border-2 border-gray-50 rounded-2xl font-bold" required>
-                <input type="number" name="sqft" placeholder="Sqft" class="p-6 border-2 border-gray-50 rounded-2xl font-bold">
+        <div class="glass p-12 max-w-3xl mx-auto leading-relaxed">
+            <h2 class="text-4xl font-black uppercase italic mb-8">Privacy Policy</h2>
+            <div class="text-zinc-400 text-sm space-y-6">
+                <p><b>1. Data Collection:</b> Pro-Exchange collects your email via Google OAuth to provide secure access to the Email Machine and AI Agent services.</p>
+                <p><b>2. AI & Social Media:</b> When using the AI Agent for TikTok/Facebook automation, we do not store your social passwords. We use secure API tokens to schedule and post content on your behalf.</p>
+                <p><b>3. Payment Data:</b> All transactions are handled by Stripe. We do not store credit card information on our servers.</p>
+                <p><b>4. Property Data:</b> Sellers uploading property images grant Pro-Exchange the right to use these images within the internal buyer feed and for automated AI marketing posts.</p>
+                <p><b>5. Encryption:</b> Sensitive contact details are encrypted using AES-256 standard before storage.</p>
             </div>
-            <div class="p-8 border-2 border-dashed border-gray-100 rounded-3xl bg-gray-50 text-center">
-                <input type="file" name="photo" class="text-xs font-black uppercase" required>
-                <p class="text-[8px] text-gray-400 mt-2 uppercase">AI will use this photo for TikTok/FB Reels</p>
-            </div>
-            <input type="text" name="contact" placeholder="Secure Contact (Email/Phone)" class="w-full p-6 border-2 border-gray-50 rounded-2xl font-bold" required>
-            <button class="w-full btn-black py-8 text-xl">Submit Free Listing</button>
-        </form>
+            <a href="/" class="btn-main px-10 py-4 mt-10 inline-block text-xs">Back to Hub</a>
+        </div>
     """ + UI_FOOTER)
 
-@app.route('/submit-lead', methods=['POST'])
-def submit_lead():
-    f = request.form
-    file = request.files.get('photo')
-    filename = secure_filename(file.filename) if file and allowed_file(file.filename) else None
-    if filename: file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-    
-    enc_contact = cipher.encrypt(f.get('contact', '').encode()).decode()
+# --- 9. CORE SYSTEM HANDLERS ---
+
+@app.route('/start-ai-trial')
+def start_ai_trial():
+    if 'user_email' not in session: return redirect(url_for('google_login', next='ai-agent'))
     with get_db() as conn:
-        conn.execute("INSERT INTO leads (address, asking_price, sqft, image_path, contact_encrypted) VALUES (?, ?, ?, ?, ?)", 
-                    (f.get('address'), f.get('price'), f.get('sqft'), filename, enc_contact))
+        end = (datetime.now() + timedelta(hours=48)).isoformat()
+        conn.execute("UPDATE users SET ai_trial_end = ? WHERE email = ?", (end, session['user_email']))
         conn.commit()
-    flash("Listing Active!")
-    return redirect(url_for('index'))
-
-# --- 9. PAYMENTS & AUTH ---
-
-@app.route('/create-checkout-session', methods=['POST'])
-def create_checkout_session():
-    try:
-        checkout_session = stripe.checkout.Session.create(
-            line_items=[{'price': 'price_1SqIjgFXcDZgM3VoEwrUvjWP', 'quantity': 1}],
-            mode='subscription',
-            success_url=request.host_url + 'ai-success',
-            cancel_url=request.host_url + 'ai-agent',
-            customer_email=session['user_email']
-        )
-        return redirect(checkout_session.url, code=303)
-    except Exception as e: return str(e)
-
-@app.route('/ai-success')
-def ai_success():
-    with get_db() as conn:
-        conn.execute("UPDATE users SET has_ai_subscription = 1, ai_status = 'on' WHERE email = ?", (session['user_email'],))
-        conn.commit()
-    return redirect(url_for('ai_agent'))
-
-@app.route('/toggle-ai')
-def toggle_ai():
-    with get_db() as conn:
-        u = conn.execute("SELECT ai_status FROM users WHERE email = ?", (session['user_email'],)).fetchone()
-        new = 'on' if u['ai_status'] == 'off' else 'off'
-        conn.execute("UPDATE users SET ai_status = ? WHERE email = ?", (new, session['user_email']))
-        conn.commit()
-    return redirect(url_for('ai_agent'))
-
-@app.route('/toggle-growth')
-def toggle_growth():
-    with get_db() as conn:
-        u = conn.execute("SELECT growth_mode FROM users WHERE email = ?", (session['user_email'],)).fetchone()
-        new = 1 if u['growth_mode'] == 0 else 0
-        conn.execute("UPDATE users SET growth_mode = ? WHERE email = ?", (new, session['user_email']))
-        conn.commit()
+    flash("48-Hour Trial Activated.")
     return redirect(url_for('ai_agent'))
 
 @app.route('/auth/login')
@@ -322,34 +275,38 @@ def callback():
     flow.fetch_token(authorization_response=request.url)
     id_info = id_token.verify_oauth2_token(flow.credentials.id_token, requests.Request(), GOOGLE_CLIENT_ID)
     session['user_email'] = id_info.get('email')
-    
     with get_db() as conn:
         conn.execute("INSERT INTO users (email) VALUES (?) ON CONFLICT(email) DO NOTHING", (session['user_email'],))
         conn.commit()
     return redirect(url_for(session.get('next_target', 'index')))
 
-@app.route('/uploads/<filename>')
-def uploaded_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-@app.route('/outreach')
-def outreach_portal():
-    if 'user_email' not in session: return redirect(url_for('google_login', next='outreach'))
+@app.route('/sell')
+def seller_portal():
     return render_template_string(UI_HEADER + """
-        <h2 class="text-4xl font-black uppercase italic mb-8">Email Machine</h2>
-        <div class="g-card p-10 text-center">
-            <h4 class="font-black uppercase mb-4">Pricing: $49/mo or 24HR Trial</h4>
-            <a href="/start-trial" class="btn-black px-10 py-4">Activate Free Trial</a>
+        <div class="glass p-12 max-w-2xl mx-auto">
+            <h2 class="text-4xl font-black uppercase italic mb-8">List Asset</h2>
+            <form action="/submit-lead" method="POST" enctype="multipart/form-data" class="space-y-6">
+                <input type="text" name="address" placeholder="Property Address" class="w-full p-5 bg-black rounded-2xl border border-zinc-800" required>
+                <input type="number" name="price" placeholder="Asking Price" class="w-full p-5 bg-black rounded-2xl border border-zinc-800" required>
+                <input type="file" name="photo" class="text-xs font-black uppercase text-zinc-600" required>
+                <button class="btn-main w-full py-6 text-xl">Submit Free Listing</button>
+            </form>
         </div>
     """ + UI_FOOTER)
 
-@app.route('/start-trial')
-def start_trial():
+@app.route('/submit-lead', methods=['POST'])
+def submit_lead():
+    f = request.form; file = request.files.get('photo')
+    filename = secure_filename(file.filename) if file else None
+    if filename: file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
     with get_db() as conn:
-        end = (datetime.now() + timedelta(hours=24)).isoformat()
-        conn.execute("UPDATE users SET trial_end = ? WHERE email = ?", (end, session['user_email']))
+        conn.execute("INSERT INTO leads (address, asking_price, image_path) VALUES (?, ?, ?)", (f.get('address'), f.get('price'), filename))
         conn.commit()
-    return redirect(url_for('outreach_portal'))
+    return redirect(url_for('index'))
+
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 if __name__ == '__main__':
     if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)

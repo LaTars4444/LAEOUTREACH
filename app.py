@@ -1233,15 +1233,7 @@ def render_ui(content, user=None):
 
 # ==============================================================================
 # END OF PART 4
-# PASTE PART 5 BELOW THIS LINE
-# ==============================================================================
-next
 
-This is Part 5 of 8 of the Titan Protocol v28 Enterprise Edition.
-
-This section implements the Application Controllers (Routes) for the Dashboard, Buyer Feed, and Buy Box Configuration. This is where the user interacts with the system to see their data and configure their deal flow.
-
-Instructions: Paste this directly below Part 4 in app.py.
 
 # ==============================================================================
 # PART 5: APPLICATION CONTROLLERS (DASHBOARD & BUYER ENGINE)

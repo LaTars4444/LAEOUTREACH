@@ -2193,14 +2193,6 @@ def uploaded_file(filename):
 # END OF PART 7
 # PASTE PART 8 BELOW THIS LINE
 # ==============================================================================
-8
-
-This is Part 8 of 8 of the Titan Protocol v28 Enterprise Edition.
-
-This final section handles the System Initialization and the entry point (if __name__ == '__main__':). It includes the critical privacy page and sets up the server to run correctly on Render's infrastructure.
-
-Instructions: Paste this directly below Part 7 in app.py.
-
 # ==============================================================================
 # PART 8: SYSTEM INITIALIZATION & ENTRY POINT
 # ==============================================================================
@@ -2261,8 +2253,7 @@ def privacy():
 @app.route('/health')
 def health_check():
     """
-    Simple endpoint for uptime monitoring services (e.g., UptimeRobot).
-    Returns 200 OK if the app is running.
+    Simple endpoint for uptime monitoring services.
     """
     return jsonify({
         "status": "operational",
@@ -2302,9 +2293,8 @@ if __name__ == '__main__':
     
     # 4. Launch Server
     # 'host=0.0.0.0' makes the server accessible externally (required for Render)
-    # 'debug=False' for production
     app.run(host='0.0.0.0', port=port, debug=False)
 
-# =======================================================================
+# ==============================================================================
 # END OF APPLICATION CODE
-# =======================================================================
+# ==============================================================================

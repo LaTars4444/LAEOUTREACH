@@ -8,15 +8,17 @@ def check_access(user, feature):
     if not user:
         return False
 
-    # 1. Check Paid Status
+    # 1. Check Paid Status (Lifetime)
     if user.subscription_status == 'lifetime':
         return True
     
-    if user.subscription_status == 'weekly':
+    # 2. Check Subscription (Weekly OR Monthly)
+    # If status is weekly/monthly, check if time remains
+    if user.subscription_status in ['weekly', 'monthly']:
         if user.subscription_end and user.subscription_end > datetime.utcnow():
             return True
 
-    # 2. Check Strict Time-Based Trials
+    # 3. Check Strict Time-Based Trials
     now = datetime.utcnow()
     trial_start = user.created_at
     

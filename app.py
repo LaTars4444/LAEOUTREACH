@@ -1,223 +1,237 @@
 import os
-import json
-import sqlite3
-import secrets
-import logging
+import random
+import time
 import base64
-import uuid
-from datetime import datetime, timedelta
-
-import stripe
-from flask import Flask, render_template_string, request, redirect, url_for, session, flash, Response
-from cryptography.fernet import Fernet
-from groq import Groq
-
-# Google Auth Imports
-from google_auth_oauthlib.flow import Flow
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
-from googleapiclient.discovery import build
+import json
+import requests
 from email.mime.text import MIMEText
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, abort
+from flask_login import login_required, current_user
+from werkzeug.utils import secure_filename
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+import stripe
 
-# ==========================================
-# CONFIG & INITIALIZATION
-# ==========================================
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("TITAN_CORE")
+# Custom imports
+from models import db, User, Lead, OutreachLog
+from access_control import check_access
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(64))
+# Configuration
+stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
+UPLOAD_FOLDER = 'static/uploads'
 
-ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", Fernet.generate_key().decode())
-cipher = Fernet(ENCRYPTION_KEY.encode())
+# ---------------------------------------------------------
+# 1) EMAIL AUTOMATION MACHINE (Server-Side Delay)
+# ---------------------------------------------------------
 
-stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
-groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+@app.route('/email_machine/send', methods=['POST'])
+@login_required
+def send_email_campaign():
+    # 1. Strict Access Check
+    if not check_access(current_user, 'email'):
+        return jsonify({'error': 'Trial expired. Please upgrade.'}), 403
 
-# Render Persistence: SQLite must be in the mounted /storage directory
-DB_PATH = "/storage/titan_main_v28.db"
-os.makedirs("/storage", exist_ok=True)
+    data = request.json
+    recipients = data.get('recipients', []) # List of emails
+    subject = data.get('subject')
+    body_template = data.get('body') # HTML content
 
-PRICE_IDS = {
-    'EMAIL_MACHINE_LIFETIME': "price_1Spy7SFXcDZgM3VoVZv71I63",
-    'EMAIL_MACHINE_WEEKLY': "price_1SpxexFXcDZgM3Vo0iYmhfpb",
-    'NEURAL_AGENT_MONTHLY': "price_1SqIjgFXcDZgM3VoEwrUvjWP"
-}
+    if not current_user.google_token:
+        return jsonify({'error': 'Google Account not connected.'}), 400
 
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
-REDIRECT_URI = os.environ.get("REDIRECT_URI")
-SCOPES = ['https://www.googleapis.com/auth/userinfo.email', 'openid', 'https://www.googleapis.com/auth/gmail.send']
+    creds_data = json.loads(current_user.google_token)
+    creds = Credentials.from_authorized_user_info(creds_data)
 
-# ==========================================
-# DATABASE LAYER
-# ==========================================
-class TitanDatabase:
-    def __init__(self, path):
-        self.path = path
-        self._init_tables()
+    if creds.expired and creds.refresh_token:
+        try:
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())
+            current_user.google_token = creds.to_json()
+            db.session.commit()
+        except Exception:
+            return jsonify({'error': 'Google Token Expired. Re-login.'}), 401
 
-    def get_connection(self):
-        conn = sqlite3.connect(self.path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+    service = build('gmail', 'v1', credentials=creds)
 
-    def _init_tables(self):
-        with self.get_connection() as conn:
-            conn.execute("""CREATE TABLE IF NOT EXISTS users (
-                email TEXT PRIMARY KEY, full_name TEXT, profile_pic TEXT,
-                email_machine_access INTEGER DEFAULT 0, email_trial_end TEXT, email_trial_used INTEGER DEFAULT 0,
-                ai_access INTEGER DEFAULT 0, ai_trial_end TEXT, ai_trial_used INTEGER DEFAULT 0,
-                google_creds_enc TEXT, last_login TEXT, created_at TEXT
-            )""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS leads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT, asking_price INTEGER, 
-                arv INTEGER, seller_email TEXT, created_at TEXT
-            )""")
-            conn.commit()
+    def generate_sending_stream():
+        yield "Starting campaign...\n"
+        
+        for email in recipients:
+            try:
+                # Server-Side Random Delay (5-15 seconds)
+                delay = random.randint(5, 15)
+                time.sleep(delay)
 
-    def get_user(self, email):
-        with self.get_connection() as conn:
-            return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+                # Construct Message
+                message = MIMEText(body_template, 'html')
+                message['to'] = email
+                message['subject'] = subject
+                raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
-db = TitanDatabase(DB_PATH)
+                # Send
+                service.users().messages().send(userId='me', body={'raw': raw}).execute()
+                
+                # Log Success
+                log = OutreachLog(user_id=current_user.id, recipient_email=email, status='success')
+                db.session.add(log)
+                db.session.commit()
+                
+                yield f"Sent to {email} (Delayed {delay}s)\n"
 
-# ==========================================
-# ACCESS & AUTH LOGIC
-# ==========================================
-class TitanAccess:
-    @staticmethod
-    def check(user, product_type):
-        now = datetime.now()
-        if product_type == "email":
-            if user['email_machine_access']: return True
-            if user['email_trial_end'] and now < datetime.fromisoformat(user['email_trial_end']): return True
-        if product_type == "ai":
-            if user['ai_access']: return True
-            if user['ai_trial_end'] and now < datetime.fromisoformat(user['ai_trial_end']): return True
-        return False
+            except Exception as e:
+                # Log Failure
+                log = OutreachLog(user_id=current_user.id, recipient_email=email, status='failed', error_msg=str(e))
+                db.session.add(log)
+                db.session.commit()
+                yield f"Failed to send to {email}: {str(e)}\n"
 
-class TitanAuth:
-    @staticmethod
-    def get_flow():
-        config = {"web": {"client_id": GOOGLE_CLIENT_ID, "auth_uri": "https://accounts.google.com/o/oauth2/auth", 
-                  "token_uri": "https://oauth2.googleapis.com/token", "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"), 
-                  "redirect_uris": [REDIRECT_URI]}}
-        return Flow.from_client_config(config, scopes=SCOPES)
+        yield "Campaign Complete."
 
-# ==========================================
-# ROUTES
-# ==========================================
+    # Use Stream Response to prevent timeout on long lists
+    return Response(generate_sending_stream(), mimetype='text/plain')
 
-@app.route('/')
-def index():
-    if 'user_email' not in session: return redirect('/auth/login')
-    user = db.get_user(session['user_email'])
-    return render_titan_ui(f"<h1>Welcome, {user['full_name']}</h1>", user=user)
+# ---------------------------------------------------------
+# 2) BUYER BUY BOX
+# ---------------------------------------------------------
 
-@app.route('/auth/login')
-def login():
-    flow = TitanAuth.get_flow()
-    flow.redirect_uri = REDIRECT_URI
-    url, state = flow.authorization_url(access_type='offline', prompt='consent')
-    session['state'] = state
-    return redirect(url)
+@app.route('/buy_box', methods=['GET', 'POST'])
+@login_required
+def buy_box():
+    if request.method == 'POST':
+        # Persist fields
+        current_user.bb_property_type = request.form.get('property_type')
+        current_user.bb_locations = request.form.get('locations')
+        current_user.bb_min_price = request.form.get('min_price')
+        current_user.bb_max_price = request.form.get('max_price')
+        current_user.bb_condition = request.form.get('condition')
+        current_user.bb_strategy = request.form.get('strategy')
+        current_user.bb_funding = request.form.get('funding')
+        current_user.bb_timeline = request.form.get('timeline')
+        
+        db.session.commit()
+        flash('Buy Box criteria updated successfully!', 'success')
+        return redirect(url_for('buy_box'))
 
-@app.route('/callback')
-def callback():
-    flow = TitanAuth.get_flow()
-    flow.redirect_uri = REDIRECT_URI
-    flow.fetch_token(authorization_response=request.url)
-    info = id_token.verify_oauth2_token(flow.credentials.id_token, google_requests.Request(), GOOGLE_CLIENT_ID)
+    return render_template('buy_box.html', user=current_user)
+
+def filter_inventory_by_buybox(inventory_list, user):
+    """Helper to filter generic inventory based on user Buy Box"""
+    if not user.bb_max_price: return inventory_list # No filter if empty
     
-    email = info['email']
-    user = db.get_user(email)
-    now = datetime.now()
+    filtered = []
+    for item in inventory_list:
+        # Logic: Check Price
+        if item.price > user.bb_max_price: continue
+        if user.bb_min_price and item.price < user.bb_min_price: continue
+        
+        # Logic: Check Location (Simple string match)
+        if user.bb_locations and user.bb_locations.lower() not in item.address.lower(): continue
+        
+        filtered.append(item)
+    return filtered
 
-    creds = {"token": flow.credentials.token, "refresh_token": flow.credentials.refresh_token, 
-             "token_uri": flow.credentials.token_uri, "client_id": flow.credentials.client_id, 
-             "client_secret": flow.credentials.client_secret}
-    enc_creds = cipher.encrypt(json.dumps(creds).encode()).decode()
+# ---------------------------------------------------------
+# 3) SELLER PROPERTY INTAKE (Zillow-Style)
+# ---------------------------------------------------------
 
-    if not user:
-        # One-time Trial Logic
-        email_trial = (now + timedelta(hours=24)).isoformat()
-        ai_trial = (now + timedelta(hours=48)).isoformat()
-        with db.get_connection() as conn:
-            conn.execute("""INSERT INTO users (email, full_name, profile_pic, google_creds_enc, created_at, 
-                         email_trial_end, ai_trial_end, email_trial_used, ai_trial_used) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)""", 
-                         (email, info.get('name'), info.get('picture'), enc_creds, now.isoformat(), email_trial, ai_trial))
-            conn.commit()
-    else:
-        with db.get_connection() as conn:
-            conn.execute("UPDATE users SET google_creds_enc = ?, last_login = ? WHERE email = ?", 
-                         (enc_creds, now.isoformat(), email))
-            conn.commit()
+@app.route('/sell', methods=['GET', 'POST'])
+def sell_property():
+    if request.method == 'POST':
+        # 1. Validation
+        required = ['address', 'property_type', 'desired_price', 'phone']
+        for field in required:
+            if not request.form.get(field):
+                flash(f"Missing required field: {field}", "error")
+                return redirect(url_for('sell_property'))
 
-    session['user_email'] = email
-    return redirect('/')
+        # 2. TitanFinance Calculation (Simple Logic)
+        desired_price = float(request.form.get('desired_price'))
+        # Heuristic: Repairs = $25/sqft (estimated) or Base 10k + Age factor
+        year_built = int(request.form.get('year_built', 1990))
+        age = 2025 - year_built
+        repair_est = 5000 + (age * 500) # Simple algorithm
+        
+        arv = desired_price * 1.3 # Optimistic ARV assumption
+        mao = (arv * 0.7) - repair_est # 70% Rule
 
-@app.route('/webhook', methods=['POST'])
+        # 3. Handle Image
+        photo_url = None
+        if 'photos' in request.files:
+            file = request.files['photos']
+            if file.filename != '':
+                filename = secure_filename(file.filename)
+                # Ensure folder exists
+                os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+                file.save(os.path.join(UPLOAD_FOLDER, filename))
+                photo_url = f"/{UPLOAD_FOLDER}/{filename}"
+
+        # 4. Save to DB
+        new_lead = Lead(
+            submitter_id=current_user.id if current_user.is_authenticated else None,
+            address=request.form.get('address'),
+            property_type=request.form.get('property_type'),
+            year_built=year_built,
+            roof_age=request.form.get('roof_age'),
+            hvac_age=request.form.get('hvac_age'),
+            condition_plumbing=request.form.get('condition_plumbing'),
+            condition_electrical=request.form.get('condition_electrical'),
+            condition_overall=request.form.get('condition_overall'),
+            occupancy_status=request.form.get('occupancy_status'),
+            desired_price=desired_price,
+            timeline=request.form.get('timeline'),
+            phone=request.form.get('phone'),
+            photos_url=photo_url,
+            arv_estimate=int(arv),
+            repair_estimate=int(repair_est),
+            max_allowable_offer=int(mao)
+        )
+        db.session.add(new_lead)
+        db.session.commit()
+        
+        flash("Property details submitted. We are analyzing your deal!", "success")
+        return redirect(url_for('sell_property'))
+
+    return render_template('sell.html')
+
+# ---------------------------------------------------------
+# 5) STRIPE WEBHOOK (STRICT)
+# ---------------------------------------------------------
+
+@app.route('/stripe_webhook', methods=['POST'])
 def stripe_webhook():
-    payload = request.get_data()
+    payload = request.get_data(as_text=True)
     sig_header = request.headers.get('Stripe-Signature')
+    webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, os.environ.get('STRIPE_WEBHOOK_SECRET'))
-    except: return Response(status=400)
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError as e:
+        return 'Invalid payload', 400
+    except stripe.error.SignatureVerificationError as e:
+        return 'Invalid signature', 400
 
     if event['type'] == 'checkout.session.completed':
-        session_obj = event['data']['object']
-        email = session_obj['customer_details']['email']
-        line_items = stripe.checkout.Session.list_line_items(session_obj['id'])
-        price_id = line_items['data'][0]['price']['id']
-
-        with db.get_connection() as conn:
-            if price_id in [PRICE_IDS['EMAIL_MACHINE_LIFETIME'], PRICE_IDS['EMAIL_MACHINE_WEEKLY']]:
-                conn.execute("UPDATE users SET email_machine_access = 1 WHERE email = ?", (email,))
-            elif price_id == PRICE_IDS['NEURAL_AGENT_MONTHLY']:
-                conn.execute("UPDATE users SET ai_access = 1 WHERE email = ?", (email,))
-            conn.commit()
-    return Response(status=200)
-
-@app.route('/ai-agent', methods=['GET', 'POST'])
-def ai_agent():
-    user = db.get_user(session.get('user_email'))
-    if not user or not TitanAccess.check(user, "ai"):
-        return redirect('/upsell-ai')
-    
-    generated_text = ""
-    if request.method == 'POST':
-        prompt = f"Write a real estate ad for {request.form.get('address')}"
-        res = groq_client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama3-70b-8192")
-        generated_text = res.choices[0].message.content
+        session = event['data']['object']
+        client_reference_id = session.get('client_reference_id') # User ID passed during checkout
         
-    return render_titan_ui(f"<form method='POST'><input name='address'><button>Generate</button></form><div>{generated_text}</div>", user=user)
+        user = User.query.get(client_reference_id)
+        if user:
+            # Check which product was bought
+            line_items = stripe.checkout.Session.list_line_items(session['id'], limit=1)
+            price_id = line_items['data'][0]['price']['id']
 
-@app.route('/checkout', methods=['POST'])
-def create_checkout():
-    session_st = stripe.checkout.Session.create(
-        payment_method_types=['card'],
-        line_items=[{'price': request.form.get('pid'), 'quantity': 1}],
-        mode='subscription' if 'monthly' in request.form.get('pid') else 'payment',
-        success_url=request.host_url + 'success',
-        cancel_url=request.host_url + 'cancel',
-        customer_email=session['user_email']
-    )
-    return redirect(session_st.url, code=303)
+            # REPLACE WITH YOUR ACTUAL PRICE IDs
+            PRICE_WEEKLY = "price_1Q..." 
+            PRICE_LIFETIME = "price_1Q..."
 
-# UI HELPER
-def render_titan_ui(content, user=None):
-    return render_template_string("""
-    <!DOCTYPE html><html><head><script src="https://cdn.tailwindcss.com"></script></head>
-    <body class="bg-black text-white p-10">
-        <nav class="mb-10 flex justify-between">
-         <a href="/" class="font-bold text-xl">TITAN v28.2</a>
-            <div>{{ user.email if user else 'Not Logged In' }}</div>
-        </nav>
-        <main>{{ content | safe }}</main>
-    </body></html>
-    """, content=content, user=user)
+            if price_id == PRICE_LIFETIME:
+                user.subscription_status = 'lifetime'
+                user.subscription_end = None # Forever
+            elif price_id == PRICE_WEEKLY:
+                user.subscription_status = 'weekly'
+                # Add 7 days from now
+                user.subscription_end = datetime.utcnow() + timedelta(days=7)
+            
+            db.session.commit()
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    return jsonify(success=True)

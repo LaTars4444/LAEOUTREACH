@@ -1,6 +1,6 @@
 from datetime import datetime
 from flask_login import UserMixin
-from .extensions import db 
+from extensions import db  # <--- FIXED: Removed the "."
 
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
@@ -10,18 +10,18 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # AUTH & STRIPE
-    google_token = db.Column(db.Text, nullable=True) # OAuth Credentials
+    google_token = db.Column(db.Text, nullable=True)
     stripe_customer_id = db.Column(db.String(100), nullable=True)
-    subscription_status = db.Column(db.String(50), default='free') # free, weekly, lifetime
+    subscription_status = db.Column(db.String(50), default='free') 
     subscription_end = db.Column(db.DateTime, nullable=True)
     
     # BUY BOX FIELDS
     bb_property_type = db.Column(db.String(50))
-    bb_locations = db.Column(db.String(255)) # Comma separated zips/cities
+    bb_locations = db.Column(db.String(255))
     bb_min_price = db.Column(db.Integer)
     bb_max_price = db.Column(db.Integer)
     bb_condition = db.Column(db.String(50))
-    bb_strategy = db.Column(db.String(50)) # flip, hold, wholesale
+    bb_strategy = db.Column(db.String(50))
     bb_funding = db.Column(db.String(50)) 
     bb_timeline = db.Column(db.String(50))
 

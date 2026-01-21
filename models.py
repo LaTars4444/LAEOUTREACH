@@ -1,7 +1,6 @@
-
 from datetime import datetime
 from flask_login import UserMixin
-from .extensions import db # Assuming db is initialized in extensions.py
+from .extensions import db 
 
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
@@ -23,13 +22,13 @@ class User(UserMixin, db.Model):
     bb_max_price = db.Column(db.Integer)
     bb_condition = db.Column(db.String(50))
     bb_strategy = db.Column(db.String(50)) # flip, hold, wholesale
-    bb_funding = db.Column(db.String(50)) # cash, hard_money, conventional
+    bb_funding = db.Column(db.String(50)) 
     bb_timeline = db.Column(db.String(50))
 
 class Lead(db.Model):
     __tablename__ = 'leads'
     id = db.Column(db.Integer, primary_key=True)
-    submitter_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True) # Optional if public
+    submitter_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     address = db.Column(db.String(255), nullable=False)
     property_type = db.Column(db.String(50))
     year_built = db.Column(db.Integer)
@@ -42,7 +41,7 @@ class Lead(db.Model):
     desired_price = db.Column(db.Integer)
     timeline = db.Column(db.String(50))
     phone = db.Column(db.String(20))
-    photos_url = db.Column(db.String(500)) # S3/Cloudinary link
+    photos_url = db.Column(db.String(500))
     
     # TitanFinance Metrics
     arv_estimate = db.Column(db.Integer)
@@ -56,5 +55,5 @@ class OutreachLog(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     recipient_email = db.Column(db.String(150), nullable=False)
     sent_at = db.Column(db.DateTime, default=datetime.utcnow)
-    status = db.Column(db.String(50)) # success, failed
+    status = db.Column(db.String(50)) 
     error_msg = db.Column(db.Text)

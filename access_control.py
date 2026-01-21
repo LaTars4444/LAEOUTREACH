@@ -3,21 +3,20 @@ from datetime import datetime, timedelta
 def check_access(user, feature):
     """
     feature: 'email' (24h trial) or 'ai' (48h trial)
-    Returns: Boolean (True if access allowed)
+    Returns: Boolean
     """
     if not user:
         return False
 
-    # 1. Check Paid Status (Permanent Unlock)
+    # 1. Check Paid Status
     if user.subscription_status == 'lifetime':
         return True
     
-    # 2. Check Subscription Status
     if user.subscription_status == 'weekly':
         if user.subscription_end and user.subscription_end > datetime.utcnow():
             return True
 
-    # 3. Check Trial Status
+    # 2. Check Strict Time-Based Trials
     now = datetime.utcnow()
     trial_start = user.created_at
     

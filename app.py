@@ -4,28 +4,57 @@ import time
 import base64
 import json
 import requests
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
+
+# Third-party imports
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, abort
-from flask_login import login_required, current_user
+from flask_login import LoginManager, login_required, current_user, login_user, logout_user
 from werkzeug.utils import secure_filename
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import stripe
 from groq import Groq
 
-# Custom imports
-from models import db, User, Lead, OutreachLog
+# LOCAL IMPORTS (Must match your file structure)
+from extensions import db 
+from models import User, Lead, OutreachLog 
 from access_control import check_access
 
-# Configuration
+# ---------------------------------------------------------
+# CONFIGURATION & SETUP
+# ---------------------------------------------------------
+app = Flask(__name__)
+
+# Security & Config
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default_dev_key')
+# Use persistent disk on Render
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////var/data/titan.db' 
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize Extensions
+db.init_app(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login' # Assumes you have a login route (not shown here, but required)
+
+# Initialize APIs
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 UPLOAD_FOLDER = 'static/uploads'
 
-# ---------------------------------------------------------
-# 1) EMAIL AUTOMATION MACHINE (Server-Side Delay)
-# ---------------------------------------------------------
+# Load User Logic for Flask-Login
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
+# Create DB Tables on startup
+with app.app_context():
+    db.create_all()
+
+# ---------------------------------------------------------
+# ROUTE: EMAIL AUTOMATION MACHINE
+# ---------------------------------------------------------
 @app.route('/email_machine/send', methods=['POST'])
 @login_required
 def send_email_campaign():
@@ -44,6 +73,7 @@ def send_email_campaign():
     creds_data = json.loads(current_user.google_token)
     creds = Credentials.from_authorized_user_info(creds_data)
 
+    # Refresh Token Logic
     if creds.expired and creds.refresh_token:
         try:
             from google.auth.transport.requests import Request
@@ -88,9 +118,8 @@ def send_email_campaign():
     return Response(generate_sending_stream(), mimetype='text/plain')
 
 # ---------------------------------------------------------
-# 2) TITAN AI GENERATOR (Groq Integration)
+# ROUTE: TITAN AI (GROQ)
 # ---------------------------------------------------------
-
 @app.route('/ai/generate', methods=['POST'])
 @login_required
 def ai_generate():
@@ -99,16 +128,16 @@ def ai_generate():
         return jsonify({'error': 'AI Trial expired. Upgrade for lifetime access.'}), 403
 
     data = request.json
-    task_type = data.get('type') # email, listing, negotiation
+    task_type = data.get('type')
     user_input = data.get('input')
 
     if not user_input:
         return jsonify({'error': 'Input data required'}), 400
 
     prompts = {
-        'email': "You are an elite real estate wholesaler. Write a short, urgent, cold email to a homeowner about buying their off-market property for cash.",
-        'listing': "You are a luxury real estate copywriter. Write a Zillow description highlighting features, using sensory words and a call to action.",
-        'negotiation': "You are a master negotiator (Chris Voss style). Provide 3 psychological responses to handle this seller objection."
+        'email': "You are an elite real estate wholesaler. Write a short, urgent, cold email to a homeowner.",
+        'listing': "You are a luxury real estate copywriter. Write a Zillow description highlighting features.",
+        'negotiation': "You are a master negotiator. Provide 3 psychological responses to handle this objection."
     }
     
     system_msg = prompts.get(task_type, prompts['email'])
@@ -130,9 +159,8 @@ def ai_generate():
         return jsonify({'error': str(e)}), 500
 
 # ---------------------------------------------------------
-# 3) BUYER BUY BOX
+# ROUTE: BUY BOX
 # ---------------------------------------------------------
-
 @app.route('/buy_box', methods=['GET', 'POST'])
 @login_required
 def buy_box():
@@ -153,9 +181,8 @@ def buy_box():
     return render_template('buy_box.html', user=current_user)
 
 # ---------------------------------------------------------
-# 4) SELLER PROPERTY INTAKE
+# ROUTE: SELLER INTAKE
 # ---------------------------------------------------------
-
 @app.route('/sell', methods=['GET', 'POST'])
 def sell_property():
     if request.method == 'POST':
@@ -165,7 +192,6 @@ def sell_property():
                 flash(f"Missing {field}", "error")
                 return redirect(url_for('sell_property'))
 
-        # TitanFinance Logic
         desired_price = float(request.form.get('desired_price'))
         year_built = int(request.form.get('year_built', 1990))
         age = 2025 - year_built
@@ -210,9 +236,8 @@ def sell_property():
     return render_template('sell.html')
 
 # ---------------------------------------------------------
-# 5) STRIPE WEBHOOK (Strict Price ID Enforcement)
+# ROUTE: STRIPE WEBHOOK
 # ---------------------------------------------------------
-
 @app.route('/stripe_webhook', methods=['POST'])
 def stripe_webhook():
     payload = request.get_data(as_text=True)
@@ -233,30 +258,26 @@ def stripe_webhook():
             line_items = stripe.checkout.Session.list_line_items(session['id'], limit=1)
             price_id = line_items['data'][0]['price']['id']
 
-            # >>>>> YOUR SPECIFIC STRIPE PRICE IDS <<<<<
-            # $3 Weekly
+            # IDs PROVIDED
             PRICE_WEEKLY = "price_1SpxexFXcDZgM3Vo0iYmhfpb"
-            
-            # $20 Lifetime
             PRICE_LIFETIME = "price_1Spy7SFXcDZgM3VoVZv71I63"
-            
-            # $50 Monthly (AI Access)
             PRICE_MONTHLY = "price_1SqIjgFXcDZgM3VoEwrUvjWP"
 
             if price_id == PRICE_LIFETIME:
                 user.subscription_status = 'lifetime'
-                user.subscription_end = None # Never expires
+                user.subscription_end = None
                 
             elif price_id == PRICE_MONTHLY:
                 user.subscription_status = 'monthly'
-                # Add 30 Days from right now
                 user.subscription_end = datetime.utcnow() + timedelta(days=30)
 
             elif price_id == PRICE_WEEKLY:
                 user.subscription_status = 'weekly'
-                # Add 7 Days from right now
                 user.subscription_end = datetime.utcnow() + timedelta(days=7)
             
             db.session.commit()
 
     return jsonify(success=True)
+
+if __name__ == "__main__":
+    app.run(debug=True)

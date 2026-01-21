@@ -1,6 +1,6 @@
 from datetime import datetime
 from flask_login import UserMixin
-from extensions import db  # <--- FIXED: Removed the "."
+from extensions import db  # <--- CHANGED: Removed the "." before extensions
 
 class User(UserMixin, db.Model):
     __tablename__ = 'users'

@@ -53,7 +53,7 @@ login_manager.login_view = 'login'
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# STRIPE PRICE IDS (REPLACE WITH YOURS)
+# STRIPE PRICE IDS
 PRICE_WEEKLY = "price_1SpxexFXcDZgM3Vo0iYmhfpb"
 PRICE_MONTHLY = "price_1SqIjgFXcDZgM3VoEwrUvjWP"
 PRICE_LIFETIME = "price_1Spy7SFXcDZgM3VoVZv71I63"
@@ -106,8 +106,8 @@ class Lead(db.Model):
     email = db.Column(db.String(100), nullable=True)
     distress_type = db.Column(db.String(100)) 
     status = db.Column(db.String(50), default="New") 
-    source = db.Column(db.String(50), default="Manual") # WILL ALWAYS SAY 'TITAN INTELLIGENCE'
-    link = db.Column(db.String(500)) # Hidden from user
+    source = db.Column(db.String(50), default="Manual")
+    link = db.Column(db.String(500)) 
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -139,30 +139,36 @@ with app.app_context():
         conn.commit()
 
 # ---------------------------------------------------------
-# 4. ACCESS CONTROL (PAYMENT WALL)
+# 4. ACCESS CONTROL (PRICING LOGIC)
 # ---------------------------------------------------------
-def is_premium(user):
-    # Lifetime check
-    if user.subscription_status == 'lifetime':
-        return True
-    # Active Subscription check
-    if user.subscription_status in ['weekly', 'monthly'] and user.subscription_end:
-        if user.subscription_end > datetime.utcnow():
+def check_access(user, feature):
+    """
+    feature: 'email' (Lifetime or Sub), 'pro' (AI/Hunter - Sub Only)
+    """
+    if not user: return False
+    
+    # 1. 48-HOUR TRIAL (Everything unlocked)
+    hours = (datetime.utcnow() - user.created_at).total_seconds() / 3600
+    if hours < 48: return True
+
+    # 2. ACTIVE SUBSCRIPTION (Unlocks EVERYTHING)
+    if user.subscription_status in ['weekly', 'monthly']:
+        if user.subscription_end and user.subscription_end > datetime.utcnow():
             return True
-            
-    # Trial check (24 Hours)
-    # FIX: Use total_seconds() / 3600
-    if (datetime.utcnow() - user.created_at).total_seconds() / 3600 < 24:
-        return True
-        
+
+    # 3. LIFETIME PLAN (Unlocks EMAIL ONLY)
+    if user.subscription_status == 'lifetime':
+        if feature == 'email': return True
+        else: return False
+
     return False
+
 # ---------------------------------------------------------
 # 5. BLACK BOX DEAL HUNTER (OBFUSCATED)
 # ---------------------------------------------------------
 def search_off_market(city, state):
     if not SEARCH_API_KEY: return []
 
-    # Hidden Dorks (User never sees these)
     queries = [
         f'site:craigslist.org "{city}" "for sale by owner" "fixer upper" -agent',
         f'"{city}" "{state}" probate estate notice property',
@@ -179,13 +185,8 @@ def search_off_market(city, state):
             res = service.cse().list(q=q, cx=SEARCH_CX, num=5).execute()
             for item in res.get('items', []):
                 snippet = item.get('snippet', '') + " " + item.get('title', '')
-                
-                # Extract Phones (###-###-####)
                 phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
-                # Extract Emails
                 emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                
-                # Heuristic Address Extraction
                 title_parts = item.get('title').split('|')[0].split('-')
                 clean_address = title_parts[0].strip()
                 if len(clean_address) < 5: clean_address = f"Unknown Property in {city}"
@@ -194,7 +195,7 @@ def search_off_market(city, state):
                     'address': clean_address,
                     'phone': phones[0] if phones else 'Unknown',
                     'email': emails[0] if emails else 'Unknown',
-                    'source': 'Titan Intelligence', # <--- OBFUSCATION
+                    'source': 'Titan Intelligence',
                     'link': item.get('link')
                 })
         except Exception:
@@ -209,8 +210,11 @@ def search_off_market(city, state):
 @login_required
 def dashboard():
     my_leads = Lead.query.filter_by(submitter_id=current_user.id).order_by(Lead.created_at.desc()).all()
-    premium = is_premium(current_user)
-    return render_template('dashboard.html', user=current_user, leads=my_leads, premium=premium)
+    
+    has_pro = check_access(current_user, 'pro')
+    has_email = check_access(current_user, 'email')
+    
+    return render_template('dashboard.html', user=current_user, leads=my_leads, has_pro=has_pro, has_email=has_email)
 
 @app.route('/pricing')
 def pricing():
@@ -219,14 +223,11 @@ def pricing():
 @app.route('/leads/hunt', methods=['POST'])
 @login_required
 def hunt_leads():
-    # PAYMENT WALL
-    if not is_premium(current_user):
-        return jsonify({'error': 'Upgrade required for Deal Hunter'}), 403
+    if not check_access(current_user, 'pro'):
+        return jsonify({'error': 'Trial expired. Subscribe to unlock Deal Hunter.'}), 403
 
     city = request.form.get('city')
     state = request.form.get('state')
-    
-    # Run the Black Box Scraper
     raw_leads = search_off_market(city, state)
     
     count = 0
@@ -239,30 +240,21 @@ def hunt_leads():
                 phone=l['phone'],
                 email=l['email'],
                 distress_type="Off-Market Distress",
-                source="Titan Intelligence", # Hidden Source
-                link=l['link'], # Stored but not shown
+                source="Titan Intelligence",
+                link=l['link'],
                 status="New"
             )
             db.session.add(new_lead)
             count += 1
     db.session.commit()
     
-    if count == 0:
-        return jsonify({'message': 'Scan complete. No new distress signals found right now.'})
-    
+    if count == 0: return jsonify({'message': 'Scan complete. No new distress signals found.'})
     return jsonify({'message': f"Success! {count} Off-Market Leads added to your list."})
 
-# ---------------------------------------------------------
-# 7. PAYMENT CHECKOUT
-# ---------------------------------------------------------
 @app.route('/create-checkout-session/<plan_type>')
 @login_required
 def create_checkout_session(plan_type):
-    prices = {
-        'weekly': PRICE_WEEKLY,
-        'monthly': PRICE_MONTHLY,
-        'lifetime': PRICE_LIFETIME
-    }
+    prices = {'weekly': PRICE_WEEKLY, 'monthly': PRICE_MONTHLY, 'lifetime': PRICE_LIFETIME}
     price_id = prices.get(plan_type)
     if not price_id: return "Invalid Plan", 400
 
@@ -282,7 +274,7 @@ def create_checkout_session(plan_type):
 @app.route('/video/create', methods=['POST'])
 @login_required
 def create_video():
-    if not is_premium(current_user): return jsonify({'error': 'Upgrade required'}), 403
+    if not check_access(current_user, 'pro'): return jsonify({'error': 'Upgrade required for AI Video'}), 403
     
     if not groq_client: return jsonify({'error': 'System Error'}), 500
     desc = request.form.get('description')
@@ -318,7 +310,7 @@ def create_video():
 @app.route('/social/post', methods=['POST'])
 @login_required
 def social_post():
-    if not is_premium(current_user): return jsonify({'error': 'Upgrade required'}), 403
+    if not check_access(current_user, 'pro'): return jsonify({'error': 'Upgrade required for Auto-Posting'}), 403
     
     data = request.json
     platform = data.get('platform')
@@ -339,7 +331,6 @@ def social_post():
         except Exception as e: return jsonify({'error': str(e)}), 500
     
     elif platform == 'tiktok':
-        # Auto-posting requires strict approval, return simulation success for now
         time.sleep(2)
         return jsonify({'message': 'Video uploaded to TikTok Drafts!'})
 
@@ -431,7 +422,7 @@ html_templates = {
 <div class="row text-center">
     <div class="col-md-4">
         <div class="card shadow-sm">
-            <div class="card-header">Weekly</div>
+            <div class="card-header">Weekly Pro</div>
             <div class="card-body">
                 <h2>$3<small>/wk</small></h2>
                 <a href="/create-checkout-session/weekly" class="btn btn-primary w-100">Start</a>
@@ -440,20 +431,20 @@ html_templates = {
     </div>
     <div class="col-md-4">
         <div class="card shadow border-primary">
-            <div class="card-header bg-primary text-white">Lifetime Deal</div>
+            <div class="card-header bg-primary text-white">Email Only (Lifetime)</div>
             <div class="card-body">
                 <h2>$20<small> (One Time)</small></h2>
-                <p>Permanent Access. No monthly fees.</p>
+                <p>Unlock Email Machine Forever.</p>
                 <a href="/create-checkout-session/lifetime" class="btn btn-dark w-100">Get Lifetime Access</a>
             </div>
         </div>
     </div>
     <div class="col-md-4">
         <div class="card shadow-sm">
-            <div class="card-header">Monthly AI</div>
+            <div class="card-header">Monthly Pro</div>
             <div class="card-body">
                 <h2>$50<small>/mo</small></h2>
-                <p>For Heavy AI Video Users</p>
+                <p>Full AI Suite + Deal Hunter</p>
                 <a href="/create-checkout-session/monthly" class="btn btn-primary w-100">Start</a>
             </div>
         </div>
@@ -471,7 +462,7 @@ html_templates = {
             <div class="card-body bg-dark text-white rounded">
                 <h4 class="fw-bold">🕵️ Deal Hunter (Titan Intelligence)</h4>
                 
-                {% if premium %}
+                {% if has_pro %}
                 <div class="row g-2 align-items-center mb-3">
                     <div class="col-auto"><input type="text" id="huntCity" class="form-control" placeholder="City" required></div>
                     <div class="col-auto"><input type="text" id="huntState" class="form-control" placeholder="State" required></div>
@@ -529,7 +520,7 @@ html_templates = {
         <div class="card shadow-sm h-100">
             <div class="card-header bg-primary text-white">🎬 AI Video Publisher</div>
             <div class="card-body">
-                {% if premium %}
+                {% if has_pro %}
                 <input type="file" id="videoPhoto" class="form-control mb-2">
                 <textarea id="videoInput" class="form-control mb-2" rows="2" placeholder="Describe property..."></textarea>
                 <button onclick="createVideo()" class="btn btn-primary w-100">Generate Video</button>

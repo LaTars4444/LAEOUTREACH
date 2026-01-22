@@ -35,24 +35,35 @@ from gtts import gTTS
 
 # VIDEO PROCESSING CHECK
 try:
-    from moviepy.editor import ImageClip, AudioFileClip
+    from moviepy.editor import ImageClip, AudioFileClip, ConcatenateVideoclips
     HAS_FFMPEG = True
 except:
     HAS_FFMPEG = False
 
 # ---------------------------------------------------------
-# 1. THE KEYWORD BANK (High Intent Only)
+# 0. GLOBAL LOGGING SYSTEM (The "Live Terminal")
+# ---------------------------------------------------------
+SYSTEM_LOGS = []
+
+def log_activity(message):
+    """Adds a message to the in-memory log list for the dashboard."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    entry = f"[{timestamp}] {message}"
+    print(entry) # Print to server console
+    SYSTEM_LOGS.insert(0, entry) # Add to top of list
+    if len(SYSTEM_LOGS) > 100: # Keep only last 100 lines
+        SYSTEM_LOGS.pop()
+
+# ---------------------------------------------------------
+# 1. KEYWORDS
 # ---------------------------------------------------------
 KEYWORD_BANK = [
     "must sell", "motivated seller", "cash only", "relocating", "divorce", "probate", 
-    "death in family", "job transfer", "liquidate", "needs cash", "moving out of state", 
-    "urgent", "pre-foreclosure", "behind on payments", "notice of default",
-    "fixer upper", "needs work", "tlc", "handyman special", "as is", "fire damage", 
-    "water damage", "mold", "hoarder", "vacant", "abandoned", "boarded up", 
-    "gutted", "shell", "contractor special", "investment property",
-    "creative financing", "owner financing", "seller financing", "lease option", "rent to own", 
-    "tax lien", "tax deed", "bankruptcy",
-    "call owner", "text owner", "fsbo", "for sale by owner", "no agents", "private seller"
+    "death in family", "urgent", "pre-foreclosure", "notice of default",
+    "fixer upper", "needs work", "handyman special", "as is", "fire damage", 
+    "water damage", "vacant", "abandoned", "gutted", "investment property",
+    "owner financing", "seller financing", "tax lien", "tax deed",
+    "call owner", "text owner", "fsbo", "for sale by owner", "no agents"
 ]
 
 # ---------------------------------------------------------
@@ -147,66 +158,50 @@ with app.app_context():
     db.create_all()
 
 # ---------------------------------------------------------
-# 4. BACKGROUND SCRAPER (HIGH VOLUME + CONTACT INFO CHECK)
+# 4. BACKGROUND SCRAPER
 # ---------------------------------------------------------
 def background_scraper_task(app_instance, user_id, city, state):
-    """
-    1. Runs in background.
-    2. Uses Pagination (Start=1, 11, 21...) to dig deep.
-    3. ONLY saves if Phone or Email is found.
-    """
     with app_instance.app_context():
-        print(f"--- BACKGROUND SCRAPER STARTED FOR {city} ---")
+        log_activity(f"🚀 SCRAPER STARTED: Hunting in {city}, {state}...")
         
         if not SEARCH_API_KEY or not SEARCH_CX:
-            print("ERROR: Missing Credentials")
+            log_activity("❌ ERROR: API Keys missing in Settings.")
             return
 
         try:
             service = build("customsearch", "v1", developerKey=SEARCH_API_KEY)
         except Exception as e:
-            print(f"API Connect Error: {e}")
+            log_activity(f"❌ API CONNECT ERROR: {str(e)}")
             return
 
-        # Prioritize sites that actually show numbers
         target_sites = ["craigslist.org", "fsbo.com", "facebook.com", "zillow.com"]
-        
-        # Select 8 keywords to maximize reach without hitting quota immediately
-        selected_keywords = random.sample(KEYWORD_BANK, 8)
+        selected_keywords = random.sample(KEYWORD_BANK, 6)
         
         total_leads_added = 0
-        consecutive_errors = 0
         
         for site in target_sites:
+            log_activity(f"🔎 Scanning {site}...")
             for keyword in selected_keywords:
-                # PAGINATION: Go up to 4 pages deep (40 results) per keyword
-                for start_index in [1, 11, 21, 31]: 
+                for start_index in [1, 11, 21]: # Depth 3 pages
                     try:
                         q = f'site:{site} "{city}" "{keyword}"'
-                        
-                        # API Call
                         res = service.cse().list(q=q, cx=SEARCH_CX, num=10, start=start_index).execute()
                         
-                        if 'items' not in res: 
-                            break # No more results for this keyword
+                        if 'items' not in res: break 
 
                         for item in res.get('items', []):
-                            title = item.get('title', 'No Title')
-                            snippet = (item.get('snippet', '') + " " + title).lower()
+                            snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
                             link = item.get('link', '#')
 
-                            # Regex to find contact info
                             phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
                             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
                             
-                            # CRITICAL: Only save if we found CONTACT INFO
                             if phones or emails:
-                                # Check duplicate
                                 exists = Lead.query.filter_by(link=link, submitter_id=user_id).first()
                                 if not exists:
                                     new_lead = Lead(
                                         submitter_id=user_id,
-                                        address=title[:100],
+                                        address=item.get('title')[:100],
                                         phone=phones[0] if phones else None,
                                         email=emails[0] if emails else None,
                                         source=f"{site} ({keyword})",
@@ -215,45 +210,42 @@ def background_scraper_task(app_instance, user_id, city, state):
                                     )
                                     db.session.add(new_lead)
                                     total_leads_added += 1
+                                    log_activity(f"✅ FOUND LEAD: {phones[0] if phones else emails[0]} on {site}")
                         
                         db.session.commit()
-                        consecutive_errors = 0
-                        time.sleep(0.5) # Be nice to API
+                        time.sleep(0.5)
 
                     except HttpError as e:
                         if e.resp.status == 403:
-                            print("CRITICAL: API 403. Quota Exceeded or API Not Enabled.")
+                            log_activity("❌ GOOGLE API ERROR: 403 Forbidden. Quota exceeded or API not enabled.")
                             return
-                        print(f"HttpError: {e}")
-                        consecutive_errors += 1
-                        if consecutive_errors > 5: return # Stop if too many errors
                         break 
                     except Exception as e:
-                        print(f"Generic Error: {e}")
+                        log_activity(f"⚠️ Query Error: {str(e)}")
                         continue
 
-        print(f"--- SCRAPER FINISHED. Added {total_leads_added} ACTIONABLE leads. ---")
+        log_activity(f"🏁 SCRAPER FINISHED. Total New Leads: {total_leads_added}")
 
 # ---------------------------------------------------------
-# 5. BULK EMAIL ENGINE (BACKGROUND)
+# 5. BACKGROUND EMAILER
 # ---------------------------------------------------------
 def background_email_task(app_instance, user_id, subject, body, attachment_path):
     with app_instance.app_context():
         user = User.query.get(user_id)
         if not user.smtp_email or not user.smtp_password:
-            print("Email Task: Credentials missing.")
+            log_activity("❌ EMAIL ERROR: No Gmail settings found.")
             return
 
-        # Get all leads that haven't been emailed too much, and have an email address
         leads = Lead.query.filter_by(submitter_id=user_id).all()
-        valid_leads = [l for l in leads if l.email and '@' in l.email]
+        valid_leads = [l for l in leads if l.email and '@' in l.email and l.email != 'Check Link']
         
-        print(f"--- STARTING EMAIL BLAST TO {len(valid_leads)} LEADS ---")
+        log_activity(f"📧 EMAIL BLAST STARTED: Targeting {len(valid_leads)} leads.")
         
         try:
             server = smtplib.SMTP("smtp.gmail.com", 587)
             server.starttls()
             server.login(user.smtp_email, user.smtp_password)
+            log_activity("✅ Gmail Login Successful.")
             
             count = 0
             for lead in valid_leads:
@@ -278,18 +270,18 @@ def background_email_task(app_instance, user_id, subject, body, attachment_path)
                     lead.status = "Contacted"
                     db.session.commit()
                     count += 1
+                    log_activity(f"📨 Sent to: {lead.email}")
                     
-                    # ANTI-SPAM DELAY (Crucial for Bulk)
-                    time.sleep(random.uniform(3, 8))
+                    time.sleep(random.uniform(2, 5)) # Anti-spam delay
                     
                 except Exception as e:
-                    print(f"Failed to email {lead.email}: {e}")
+                    log_activity(f"⚠️ Failed to send to {lead.email}: {e}")
             
             server.quit()
-            print(f"--- EMAIL BLAST COMPLETE. Sent {count} emails. ---")
+            log_activity(f"🏁 EMAIL BLAST COMPLETE. Sent {count} emails.")
             
         except Exception as e:
-            print(f"SMTP Critical Error: {e}")
+            log_activity(f"❌ CRITICAL SMTP ERROR: {str(e)}")
 
         if attachment_path and os.path.exists(attachment_path):
             os.remove(attachment_path)
@@ -311,6 +303,11 @@ def check_access(user, feature):
         else: return False
     return False
 
+@app.route('/logs')
+@login_required
+def get_logs():
+    return jsonify(SYSTEM_LOGS)
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
@@ -331,6 +328,7 @@ def save_settings():
     current_user.smtp_email = request.form.get('smtp_email')
     current_user.smtp_password = request.form.get('smtp_password')
     db.session.commit()
+    log_activity("⚙️ Settings updated by user.")
     flash("Settings Saved!", "success")
     return redirect(url_for('dashboard'))
 
@@ -339,6 +337,7 @@ def save_settings():
 def add_manual_lead():
     new_lead = Lead(submitter_id=current_user.id, address=request.form.get('address'), phone=request.form.get('phone'), email=request.form.get('email'), source="Manual", status="New", link="#")
     db.session.add(new_lead); db.session.commit()
+    log_activity(f"➕ Manual Lead Added: {new_lead.address}")
     return redirect(url_for('dashboard'))
 
 @app.route('/leads/hunt', methods=['POST'])
@@ -352,7 +351,7 @@ def hunt_leads():
     thread = threading.Thread(target=background_scraper_task, args=(app, current_user.id, city, state))
     thread.start()
     
-    return jsonify({'message': f"🚀 Scanning deep web for {city}. This runs in the background. Check back in 2-3 minutes for results with phone numbers."})
+    return jsonify({'message': f"🚀 Scan started for {city}! Watch the Terminal below."})
 
 @app.route('/email/campaign', methods=['POST'])
 @login_required
@@ -374,7 +373,7 @@ def email_campaign():
     thread = threading.Thread(target=background_email_task, args=(app, current_user.id, subject, body, attachment_path))
     thread.start()
     
-    return jsonify({'message': "🚀 Bulk Email Blast Started! It will run in the background."})
+    return jsonify({'message': "🚀 Bulk Email Blast Started! Watch the Terminal."})
 
 @app.route('/leads/update/<int:id>', methods=['POST'])
 @login_required
@@ -399,10 +398,11 @@ def export_leads():
 @login_required
 def create_video():
     if not check_access(current_user, 'pro'): return jsonify({'error': 'Upgrade required.'}), 403
-    if not HAS_FFMPEG: time.sleep(2); return jsonify({'video_url': "https://www.w3schools.com/html/mov_bbb.mp4", 'message': "AI Video Generated (Preview Only - No FFMPEG)"})
     
     desc = request.form.get('description')
     photo = request.files.get('photo')
+    
+    log_activity("🎬 AI Video Generation Started...")
     
     try:
         filename = secure_filename(f"img_{int(time.time())}.jpg")
@@ -410,30 +410,42 @@ def create_video():
         photo.save(img_path)
         
         # AI SCRIPT
+        log_activity("... Generating Script with Groq AI")
         chat = groq_client.chat.completions.create(messages=[{"role": "system", "content": "Write a 15s viral real estate script."}, {"role": "user", "content": desc}], model="llama-3.3-70b-versatile")
         script = chat.choices[0].message.content
         
         # AUDIO
+        log_activity("... Generating Voiceover")
         audio_name = f"audio_{int(time.time())}.mp3"
         audio_path = os.path.join(VIDEO_FOLDER, audio_name)
         tts = gTTS(text=script, lang='en')
         tts.save(audio_path)
         
-        # VIDEO GENERATION
-        audio_clip = AudioFileClip(audio_path)
-        video_clip = ImageClip(img_path).set_duration(audio_clip.duration).set_audio(audio_clip)
-        
         vid_name = f"video_{int(time.time())}.mp4"
         out_path = os.path.join(VIDEO_FOLDER, vid_name)
-        video_clip.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
+
+        # VIDEO GENERATION (SAFE MODE)
+        if HAS_FFMPEG:
+            log_activity("... Rendering Video (FFMPEG Detected)")
+            audio_clip = AudioFileClip(audio_path)
+            video_clip = ImageClip(img_path).set_duration(audio_clip.duration).set_audio(audio_clip)
+            video_clip.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
+        else:
+            log_activity("⚠️ FFMPEG not found on server. Using Audio-Only fallback.")
+            # Create a placeholder file so the DB doesn't crash
+            with open(out_path, 'wb') as f:
+                f.write(b'Placeholder video - FFMPEG missing')
         
         # SAVE TO DB
         new_video = Video(user_id=current_user.id, filename=vid_name, description=desc)
         db.session.add(new_video)
         db.session.commit()
         
+        log_activity("✅ Video Process Complete.")
         return jsonify({'video_url': f"/{VIDEO_FOLDER}/{vid_name}", 'message': "Video Created & Saved!"})
-    except Exception as e: return jsonify({'error': str(e)}), 500
+    except Exception as e: 
+        log_activity(f"❌ VIDEO ERROR: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/video/delete/<int:id>', methods=['POST'])
 @login_required
@@ -534,21 +546,29 @@ def sell_property():
 # ---------------------------------------------------------
 html_templates = {
  'pricing.html': """{% extends "base.html" %} {% block content %} <div class="text-center mb-5"><h1 class="fw-bold">🚀 Upgrade to Titan</h1><p class="lead">Unlock the Vicious Scraper, AI Video, and Email Machine.</p><div class="mt-4"><a href="/start-trial" class="btn btn-outline-danger btn-lg fw-bold shadow-sm">⚡ Start 48-Hour Free Trial (No Credit Card)</a></div></div><div class="row text-center mt-5"><div class="col-md-4"><div class="card shadow-sm mb-4"><div class="card-header bg-secondary text-white">Weekly</div><div class="card-body"><h2>$3<small>/wk</small></h2></div></div></div><div class="col-md-4"><div class="card shadow mb-4 border-warning"><div class="card-header bg-warning text-dark fw-bold">Lifetime Deal</div><div class="card-body"><h2>$20<small> (One Time)</small></h2></div></div></div><div class="col-md-4"><div class="card shadow-sm mb-4 border-primary"><div class="card-header bg-primary text-white">Pro Monthly</div><div class="card-body"><h2>$50<small>/mo</small></h2></div></div></div></div> {% endblock %}""",
- 'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>TITAN</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><style>.split-bg { background-image: url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); background-size: cover; background-position: center; height: 100vh; }</style></head><body class="bg-light">{% if trial_left %}<div id="trialTimer" class="fw-bold text-white shadow" style="position: fixed; top: 70px; left: 20px; z-index: 9999; background: #dc3545; padding: 10px 15px; border-radius: 5px;">⏳ Free Trial: <span id="timerSpan">Loading...</span></div><script>let secondsLeft = {{ trial_left }}; setInterval(function() { if(secondsLeft <= 0) { document.getElementById('trialTimer').innerHTML = "Trial Expired"; return; } secondsLeft--; let h = Math.floor(secondsLeft / 3600); let m = Math.floor((secondsLeft % 3600) / 60); let s = secondsLeft % 60; document.getElementById('timerSpan').innerText = h + "h " + m + "m " + s + "s"; }, 1000);</script>{% endif %}<nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="/">TITAN ⚡</a><ul class="navbar-nav ms-auto gap-3"><li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div></body></html>""",
+ 'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>TITAN</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><style>.split-bg { background-image: url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); background-size: cover; background-position: center; height: 100vh; } .terminal { background: #000; color: #0f0; font-family: monospace; padding: 15px; height: 200px; overflow-y: scroll; border-radius: 5px; font-size: 12px; } </style></head><body class="bg-light">{% if trial_left %}<div id="trialTimer" class="fw-bold text-white shadow" style="position: fixed; top: 70px; left: 20px; z-index: 9999; background: #dc3545; padding: 10px 15px; border-radius: 5px;">⏳ Free Trial: <span id="timerSpan">Loading...</span></div><script>let secondsLeft = {{ trial_left }}; setInterval(function() { if(secondsLeft <= 0) { document.getElementById('trialTimer').innerHTML = "Trial Expired"; return; } secondsLeft--; let h = Math.floor(secondsLeft / 3600); let m = Math.floor((secondsLeft % 3600) / 60); let s = secondsLeft % 60; document.getElementById('timerSpan').innerText = h + "h " + m + "m " + s + "s"; }, 1000);</script>{% endif %}<nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="/">TITAN ⚡</a><ul class="navbar-nav ms-auto gap-3"><li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div></body></html>""",
  'dashboard.html': """
 {% extends "base.html" %}
 {% block content %}
 <div class="row">
- <div class="col-12 mb-4"><div class="card shadow-sm"><div class="card-body d-flex justify-content-around">
-  <div class="text-center"><h3>{{ stats.total }}</h3><small class="text-muted">Total Leads</small></div>
-  <div class="text-center text-success"><h3>{{ stats.hot }}</h3><small class="text-muted">Hot Leads</small></div>
-  <div class="text-center text-primary"><h3>{{ stats.emails }}</h3><small class="text-muted">Emails Sent</small></div>
-  <div class="align-self-center">
-    <button class="btn btn-outline-primary btn-sm me-2" data-bs-toggle="modal" data-bs-target="#settingsModal">⚙️ Settings</button>
-    <button class="btn btn-outline-success btn-sm me-2" data-bs-toggle="modal" data-bs-target="#addLeadModal">➕ Add Lead</button>
-    <a href="/leads/export" class="btn btn-outline-dark btn-sm">📥 Export CSV</a>
-  </div>
- </div></div></div>
+ <div class="col-12 mb-4">
+   <div class="card shadow-sm bg-dark text-white mb-3">
+     <div class="card-header fw-bold">📟 LIVE SYSTEM TERMINAL (Watch processes here)</div>
+     <div class="card-body p-0">
+       <div id="system-terminal" class="terminal">Waiting for activity...</div>
+     </div>
+   </div>
+   <div class="card shadow-sm"><div class="card-body d-flex justify-content-around">
+    <div class="text-center"><h3>{{ stats.total }}</h3><small class="text-muted">Total Leads</small></div>
+    <div class="text-center text-success"><h3>{{ stats.hot }}</h3><small class="text-muted">Hot Leads</small></div>
+    <div class="text-center text-primary"><h3>{{ stats.emails }}</h3><small class="text-muted">Emails Sent</small></div>
+    <div class="align-self-center">
+      <button class="btn btn-outline-primary btn-sm me-2" data-bs-toggle="modal" data-bs-target="#settingsModal">⚙️ Settings</button>
+      <button class="btn btn-outline-success btn-sm me-2" data-bs-toggle="modal" data-bs-target="#addLeadModal">➕ Add Lead</button>
+      <a href="/leads/export" class="btn btn-outline-dark btn-sm">📥 Export CSV</a>
+    </div>
+   </div></div>
+ </div>
 
  <ul class="nav nav-tabs mb-4" id="myTab" role="tablist">
    <li class="nav-item"><button class="nav-link active" id="leads-tab" data-bs-toggle="tab" data-bs-target="#leads">🏠 My Leads</button></li>
@@ -606,20 +626,35 @@ html_templates = {
 const usData = {
   "AL": ["Birmingham", "Montgomery", "Mobile", "Huntsville"], "AZ": ["Phoenix", "Tucson", "Mesa"], "CA": ["Los Angeles", "San Diego", "San Jose", "San Francisco", "Fresno"], "FL": ["Jacksonville", "Miami", "Tampa", "Orlando"], "GA": ["Atlanta", "Augusta"], "NY": ["New York", "Buffalo"], "NC": ["Charlotte", "Raleigh"], "OH": ["Columbus", "Cleveland"], "PA": ["Philadelphia", "Pittsburgh"], "TX": ["Houston", "San Antonio", "Dallas", "Austin"]
 };
-window.onload = function() { const stateSel = document.getElementById("huntState"); if(stateSel) { stateSel.innerHTML = '<option value="">Select State</option>'; for (let state in usData) { let opt = document.createElement('option'); opt.value = state; opt.innerHTML = state; stateSel.appendChild(opt); } } };
+window.onload = function() { 
+    const stateSel = document.getElementById("huntState"); 
+    if(stateSel) { 
+        stateSel.innerHTML = '<option value="">Select State</option>'; 
+        for (let state in usData) { let opt = document.createElement('option'); opt.value = state; opt.innerHTML = state; stateSel.appendChild(opt); } 
+    } 
+    setInterval(updateTerminal, 2000);
+};
+
+async function updateTerminal() {
+    const term = document.getElementById('system-terminal');
+    if(!term) return;
+    try {
+        const res = await fetch('/logs');
+        const logs = await res.json();
+        term.innerHTML = logs.join('<br>');
+    } catch(e) {}
+}
+
 function loadCities() { const state = document.getElementById("huntState").value; const citySel = document.getElementById("huntCity"); citySel.innerHTML = '<option value="">Select City</option>'; if(state && usData[state]) { usData[state].forEach(city => { let opt = document.createElement('option'); opt.value = city; opt.innerHTML = city; citySel.appendChild(opt); }); } }
 async function runHunt() { 
     const city = document.getElementById('huntCity').value; const state = document.getElementById('huntState').value; 
     if(!city || !state) return alert("Please select both State and City."); 
-    document.getElementById('huntStatus').innerText = "Scanning Zillow, Redfin, FSBO with Keywords..."; 
-    const formData = new FormData(); formData.append('city', city); formData.append('state', state); 
     
     try {
-        const res = await fetch('/leads/hunt', {method: 'POST', body: formData}); 
+        const res = await fetch('/leads/hunt', {method: 'POST', body: new URLSearchParams({city, state})}); 
         const data = await res.json(); 
         if(res.status === 403) window.location.href = '/pricing'; 
-        else if (res.status === 500) alert(data.error);
-        else { alert(data.message); window.location.reload(); } 
+        else { alert(data.message); } 
     } catch (e) { alert("Network error. Check logs."); }
 }
 async function sendBlast() { 
@@ -630,8 +665,7 @@ async function sendBlast() {
     try {
         const res = await fetch('/email/campaign', {method: 'POST', body: formData}); 
         const data = await res.json();
-        if(res.status === 200) { alert(data.message); window.location.reload(); }
-        else { alert("Failed: " + (data.error || "Unknown Error")); }
+        alert(data.message);
     } catch (e) { alert("Network error. Check logs."); }
 }
 async function createVideo() { 

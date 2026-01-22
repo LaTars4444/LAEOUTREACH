@@ -115,15 +115,16 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 # ---------------------------------------------------------
-# 3. AUTO-MIGRATION LOGIC (THE FIX)
+# 3. AUTO-MIGRATION LOGIC (COMPLETE FIX)
 # ---------------------------------------------------------
 with app.app_context():
     db.create_all() # Ensures base tables exist
     
     # Check for missing columns and add them manually to prevent crashes
     inspector = inspect(db.engine)
-    user_columns = [c['name'] for c in inspector.get_columns('users')]
     
+    # 1. FIX USER TABLE
+    user_columns = [c['name'] for c in inspector.get_columns('users')]
     with db.engine.connect() as conn:
         if 'tiktok_token' not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN tiktok_token TEXT"))
@@ -135,14 +136,24 @@ with app.app_context():
             conn.execute(text("ALTER TABLE users ADD COLUMN bb_min_price INTEGER"))
         if 'bb_max_price' not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN bb_max_price INTEGER"))
-        
-        # Also check Leads table
-        lead_columns = [c['name'] for c in inspector.get_columns('leads')]
-        if 'link' not in lead_columns:
-            conn.execute(text("ALTER TABLE leads ADD COLUMN link TEXT"))
             
         conn.commit()
 
+    # 2. FIX LEADS TABLE (THIS WAS MISSING)
+    lead_columns = [c['name'] for c in inspector.get_columns('leads')]
+    with db.engine.connect() as conn:
+        if 'email' not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN email TEXT"))
+        if 'distress_type' not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN distress_type TEXT"))
+        if 'link' not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN link TEXT"))
+        if 'source' not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN source TEXT"))
+        if 'status' not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN status TEXT"))
+            
+        conn.commit()
 # ---------------------------------------------------------
 # 4. DEAL HUNTER LOGIC (OSINT AGGREGATOR)
 # ---------------------------------------------------------

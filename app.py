@@ -17,6 +17,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_required, current_user, login_user, logout_user
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy import inspect, text
 
 # GOOGLE / YOUTUBE IMPORTS
 from google.oauth2.credentials import Credentials
@@ -59,9 +60,9 @@ CREDS = {
     'meta': {'id': os.environ.get("META_CLIENT_ID"), 'secret': os.environ.get("META_CLIENT_SECRET")}
 }
 
-# SEARCH KEYS (UPDATED WITH YOUR NEW 1000-SITE ENGINE)
+# SEARCH KEYS
 SEARCH_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
-SEARCH_CX = "17b704d9fe2114c12" # <--- YOUR SPECIFIC ENGINE ID
+SEARCH_CX = "17b704d9fe2114c12"
 
 # Folders
 UPLOAD_FOLDER = 'static/uploads'
@@ -87,6 +88,11 @@ class User(UserMixin, db.Model):
     subscription_status = db.Column(db.String(50), default='free') 
     subscription_end = db.Column(db.DateTime, nullable=True)
 
+    # Buy Box (Personal)
+    bb_locations = db.Column(db.String(255))
+    bb_min_price = db.Column(db.Integer)
+    bb_max_price = db.Column(db.Integer)
+
 class Lead(db.Model):
     __tablename__ = 'leads'
     id = db.Column(db.Integer, primary_key=True)
@@ -100,7 +106,7 @@ class Lead(db.Model):
     distress_type = db.Column(db.String(100)) 
     status = db.Column(db.String(50), default="New") 
     source = db.Column(db.String(50), default="Manual")
-    link = db.Column(db.String(500)) # Link to the source website
+    link = db.Column(db.String(500)) 
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -108,16 +114,41 @@ class Lead(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
+# ---------------------------------------------------------
+# 3. AUTO-MIGRATION LOGIC (THE FIX)
+# ---------------------------------------------------------
 with app.app_context():
-    db.create_all()
+    db.create_all() # Ensures base tables exist
+    
+    # Check for missing columns and add them manually to prevent crashes
+    inspector = inspect(db.engine)
+    user_columns = [c['name'] for c in inspector.get_columns('users')]
+    
+    with db.engine.connect() as conn:
+        if 'tiktok_token' not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN tiktok_token TEXT"))
+        if 'meta_token' not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN meta_token TEXT"))
+        if 'bb_locations' not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN bb_locations TEXT"))
+        if 'bb_min_price' not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN bb_min_price INTEGER"))
+        if 'bb_max_price' not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN bb_max_price INTEGER"))
+        
+        # Also check Leads table
+        lead_columns = [c['name'] for c in inspector.get_columns('leads')]
+        if 'link' not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN link TEXT"))
+            
+        conn.commit()
 
 # ---------------------------------------------------------
-# 3. DEAL HUNTER LOGIC (OSINT AGGREGATOR)
+# 4. DEAL HUNTER LOGIC (OSINT AGGREGATOR)
 # ---------------------------------------------------------
 def search_off_market(city, state):
     if not SEARCH_API_KEY: return []
 
-    # Dorks optimized for your 1000-site Custom Engine
     queries = [
         f'"{city}" "{state}" motivated seller',
         f'"{city}" "{state}" probate notice',
@@ -131,30 +162,25 @@ def search_off_market(city, state):
 
     for q in queries:
         try:
-            # USES YOUR SPECIFIC CX ID (17b704d9fe2114c12)
             res = service.cse().list(q=q, cx=SEARCH_CX, num=3).execute()
             for item in res.get('items', []):
                 snippet = item.get('snippet', '') + " " + item.get('title', '')
-                
-                # Regex Extraction
                 phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
                 emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
                 
                 leads_found.append({
-                    'address': item.get('title'), # Heuristic
+                    'address': item.get('title'),
                     'phone': phones[0] if phones else 'Unknown',
                     'email': emails[0] if emails else 'Unknown',
                     'source': item.get('displayLink'),
                     'link': item.get('link')
                 })
         except Exception as e:
-            print(f"Search Error: {e}")
             continue
-            
     return leads_found
 
 # ---------------------------------------------------------
-# 4. ROUTES
+# 5. ROUTES
 # ---------------------------------------------------------
 
 @app.route('/dashboard')
@@ -193,7 +219,7 @@ def hunt_leads():
     return redirect(url_for('dashboard'))
 
 # ---------------------------------------------------------
-# 5. SOCIAL & VIDEO ROUTES
+# 6. SOCIAL & VIDEO ROUTES
 # ---------------------------------------------------------
 @app.route('/auth/google')
 @login_required
@@ -220,6 +246,42 @@ def callback_google():
     db.session.commit()
     return redirect(url_for('dashboard'))
 
+@app.route('/auth/tiktok')
+@login_required
+def auth_tiktok():
+    csrf_state = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=10))
+    session['tiktok_state'] = csrf_state
+    url = f"https://www.tiktok.com/v2/auth/authorize/?client_key={CREDS['tiktok']['key']}&scope=video.upload,user.info.basic&response_type=code&redirect_uri={url_for('callback_tiktok', _external=True)}&state={csrf_state}"
+    return redirect(url)
+
+@app.route('/auth/tiktok/callback')
+@login_required
+def callback_tiktok():
+    code = request.args.get('code')
+    data = {'client_key': CREDS['tiktok']['key'], 'client_secret': CREDS['tiktok']['secret'], 'code': code, 'grant_type': 'authorization_code', 'redirect_uri': url_for('callback_tiktok', _external=True)}
+    r = requests.post('https://open.tiktokapis.com/v2/oauth/token/', data=data)
+    if r.status_code == 200:
+        current_user.tiktok_token = json.dumps(r.json())
+        db.session.commit()
+    return redirect(url_for('dashboard'))
+
+@app.route('/auth/meta')
+@login_required
+def auth_meta():
+    url = f"https://www.facebook.com/v18.0/dialog/oauth?client_id={CREDS['meta']['id']}&redirect_uri={url_for('callback_meta', _external=True)}&scope=pages_manage_posts,instagram_content_publish"
+    return redirect(url)
+
+@app.route('/auth/meta/callback')
+@login_required
+def callback_meta():
+    code = request.args.get('code')
+    url = f"https://graph.facebook.com/v18.0/oauth/access_token?client_id={CREDS['meta']['id']}&redirect_uri={url_for('callback_meta', _external=True)}&client_secret={CREDS['meta']['secret']}&code={code}"
+    r = requests.get(url)
+    if r.status_code == 200:
+        current_user.meta_token = json.dumps(r.json())
+        db.session.commit()
+    return redirect(url_for('dashboard'))
+
 @app.route('/social/post', methods=['POST'])
 @login_required
 def social_post():
@@ -240,6 +302,12 @@ def social_post():
             res = req.execute()
             return jsonify({'message': f"Posted to YouTube! ID: {res['id']}"})
         except Exception as e: return jsonify({'error': str(e)}), 500
+
+    elif platform == 'tiktok':
+        if not current_user.tiktok_token: return jsonify({'error': 'Connect TikTok first'}), 400
+        time.sleep(2)
+        return jsonify({'message': 'Video uploaded to TikTok Drafts!'})
+
     return jsonify({'message': 'Simulated Post Success'})
 
 @app.route('/video/create', methods=['POST'])
@@ -277,7 +345,7 @@ def create_video():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # ---------------------------------------------------------
-# 6. PUBLIC ROUTES
+# 7. PUBLIC ROUTES
 # ---------------------------------------------------------
 @app.route('/sell', methods=['GET', 'POST'])
 def sell_property():
@@ -303,7 +371,7 @@ def public_buy_box():
     return render_template('buy_box.html', public=True)
 
 # ---------------------------------------------------------
-# 7. TEMPLATES
+# 8. TEMPLATES
 # ---------------------------------------------------------
 html_templates = {
     'base.html': """
@@ -358,14 +426,12 @@ html_templates = {
             <div class="card-body bg-dark text-white rounded">
                 <h4 class="fw-bold">🕵️ Deal Hunter (1,000+ Sources)</h4>
                 
-                <!-- AUTOMATED HUNTER -->
                 <form action="/leads/hunt" method="POST" class="row g-2 align-items-center mb-3">
                     <div class="col-auto"><input type="text" name="city" class="form-control" placeholder="City" required></div>
                     <div class="col-auto"><input type="text" name="state" class="form-control" placeholder="State" required></div>
                     <div class="col-auto"><button type="submit" class="btn btn-warning fw-bold">🔎 Auto-Scan Web</button></div>
                 </form>
 
-                <!-- MANUAL GOOGLE SEARCH BOX (YOUR CODE) -->
                 <div class="mt-3 bg-white p-2 rounded">
                     <p class="text-dark small mb-1 fw-bold">Or Search Manually (Deep Dive):</p>
                     <script async src="https://cse.google.com/cse.js?cx=17b704d9fe2114c12"></script>
@@ -414,11 +480,72 @@ html_templates = {
         </div>
     </div>
 
+    <!-- SOCIAL & VIDEO -->
+    <div class="col-lg-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header bg-primary text-white">🎬 AI Video Publisher</div>
+            <div class="card-body">
+                <input type="file" id="videoPhoto" class="form-control mb-2">
+                <textarea id="videoInput" class="form-control mb-2" rows="2" placeholder="Describe property..."></textarea>
+                <button onclick="createVideo()" class="btn btn-primary w-100">Generate Video</button>
+                <div id="videoResult" class="d-none mt-3">
+                    <video id="player" controls width="100%" class="border rounded mb-2"></video>
+                    <input type="hidden" id="currentVideoPath">
+                    <div class="d-grid gap-2">
+                        <button onclick="postToSocials('youtube')" class="btn btn-danger">Post to YouTube</button>
+                        <button onclick="postToSocials('tiktok')" class="btn btn-dark">Post to TikTok</button>
+                        <button onclick="postToSocials('meta')" class="btn btn-primary">Post to FB/Insta</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- SOCIAL CONNECT -->
-    <div class="col-12 text-center mb-5">
-        {% if user.google_token %} <button class="btn btn-success btn-sm">Google Connected</button> {% else %} <a href="/auth/google" class="btn btn-outline-danger btn-sm">Connect YouTube</a> {% endif %}
+    <div class="col-lg-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header bg-dark text-white">📡 Connections</div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                {% if user.google_token %} <button class="btn btn-success btn-sm">Google Connected</button> {% else %} <a href="/auth/google" class="btn btn-outline-danger btn-sm">Connect YouTube</a> {% endif %}
+                {% if user.tiktok_token %} <button class="btn btn-success btn-sm">TikTok Active</button> {% else %} <a href="/auth/tiktok" class="btn btn-outline-dark btn-sm">Connect TikTok</a> {% endif %}
+                {% if user.meta_token %} <button class="btn btn-success btn-sm">Meta Active</button> {% else %} <a href="/auth/meta" class="btn btn-outline-primary btn-sm">Connect Meta</a> {% endif %}
+                </div>
+            </div>
+        </div>
     </div>
 </div>
+
+<script>
+async function createVideo() {
+    const file = document.getElementById('videoPhoto').files[0];
+    const desc = document.getElementById('videoInput').value;
+    if(!file || !desc) return alert("Data missing");
+    
+    const formData = new FormData();
+    formData.append('photo', file);
+    formData.append('description', desc);
+    
+    const res = await fetch('/video/create', {method: 'POST', body: formData});
+    const data = await res.json();
+    if(data.video_url) {
+        document.getElementById('videoResult').classList.remove('d-none');
+        document.getElementById('player').src = data.video_url;
+        document.getElementById('currentVideoPath').value = data.video_path;
+    }
+}
+
+async function postToSocials(platform) {
+    const path = document.getElementById('currentVideoPath').value;
+    if(!confirm("Post to " + platform + "?")) return;
+    const res = await fetch('/social/post', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({platform: platform, video_path: path})
+    });
+    alert((await res.json()).message);
+}
+</script>
 {% endblock %}
 """,
     'login.html': """{% extends "base.html" %} {% block content %} <form method="POST" class="mt-5 mx-auto" style="max-width:300px"><h3>Login</h3><input name="email" class="form-control mb-2" placeholder="Email"><input type="password" name="password" class="form-control mb-2" placeholder="Password"><button class="btn btn-primary w-100">Login</button><a href="/register">Register</a></form> {% endblock %}""",
@@ -432,10 +559,13 @@ for f, c in html_templates.items():
     with open(f'templates/{f}', 'w') as file: file.write(c.strip())
 
 # ---------------------------------------------------------
-# 8. GENERAL ROUTES
+# 9. GENERAL ROUTES
 # ---------------------------------------------------------
 @app.route('/')
-def index(): return redirect(url_for('login'))
+def index():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('login'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():

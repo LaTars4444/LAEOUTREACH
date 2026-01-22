@@ -4,6 +4,7 @@ import time
 import base64
 import json
 import re
+import threading
 from datetime import datetime, timedelta
 
 # Allow HTTP for OAuth on Render
@@ -53,9 +54,9 @@ login_manager.login_view = 'login'
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# SEARCH API KEYS (REQUIRED FOR 1000+ SITE SCAN)
+# SEARCH CONFIG
 SEARCH_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
-SEARCH_CX = "17b704d9fe2114c12" # Replace if you have a different ID
+SEARCH_CX = os.environ.get("GOOGLE_SEARCH_CX", "17b704d9fe2114c12")
 
 # STRIPE PRICE IDS
 PRICE_WEEKLY = "price_1SpxexFXcDZgM3Vo0iYmhfpb"
@@ -93,8 +94,6 @@ class User(UserMixin, db.Model):
     # Subscription & Trial Logic
     subscription_status = db.Column(db.String(50), default='free') 
     subscription_end = db.Column(db.DateTime, nullable=True)
-    
-    # NEW: Trial Logic
     trial_active = db.Column(db.Boolean, default=False)
     trial_start = db.Column(db.DateTime, nullable=True)
 
@@ -137,14 +136,12 @@ with app.app_context():
     db.create_all()
     inspector = inspect(db.engine)
     
-    # USER MIGRATION
     user_columns = [c['name'] for c in inspector.get_columns('users')]
     with db.engine.connect() as conn:
         if 'trial_active' not in user_columns: conn.execute(text("ALTER TABLE users ADD COLUMN trial_active BOOLEAN DEFAULT 0"))
         if 'trial_start' not in user_columns: conn.execute(text("ALTER TABLE users ADD COLUMN trial_start DATETIME"))
         conn.commit()
 
-    # LEAD MIGRATION
     lead_columns = [c['name'] for c in inspector.get_columns('leads')]
     with db.engine.connect() as conn:
         if 'year_built' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN year_built INTEGER"))
@@ -164,23 +161,19 @@ with app.app_context():
 def check_access(user, feature):
     if not user: return False
     
-    # 1. TRIAL CHECK (48 HOURS)
     if user.trial_active and user.trial_start:
         hours_passed = (datetime.utcnow() - user.trial_start).total_seconds() / 3600
         if hours_passed < 48:
-            return True # Trial is valid
+            return True
         else:
-            # Trial Expired - Update DB to prevent loop
             if user.trial_active:
                 user.trial_active = False 
                 db.session.commit()
     
-    # 2. ACTIVE SUBSCRIPTION
     if user.subscription_status in ['weekly', 'monthly']:
         if user.subscription_end and user.subscription_end > datetime.utcnow():
             return True
 
-    # 3. LIFETIME PLAN
     if user.subscription_status == 'lifetime':
         if feature == 'email': return True
         else: return False
@@ -188,24 +181,24 @@ def check_access(user, feature):
     return False
 
 # ---------------------------------------------------------
-# 5. GOOGLE API SCRAPER (1000+ SITES)
+# 5. GOOGLE API SCRAPER (AGGRESSIVE OFF-MARKET LOGIC)
 # ---------------------------------------------------------
 def search_off_market(city, state):
-    """
-    Uses Google Custom Search API to scan the user's specific list of 1000+ websites.
-    """
     if not SEARCH_API_KEY: 
         print("ERROR: Missing GOOGLE_SEARCH_API_KEY")
         return []
 
     print(f"--- API Scanning 1000+ Sites for {city}, {state} ---")
     
-    # Queries designed to hit your configured sites (CSE)
+    # AGGRESSIVE OFF-MARKET QUERIES
+    # We use -broker and -agent to remove Realtor listings
+    # We use "fixer upper", "probate", "cash only" to find distress
     queries = [
-        f'"{city}" "{state}" "for sale by owner"',
-        f'"{city}" "investment property" "needs work"',
-        f'"{city}" "off market" real estate',
-        f'"{city}" "distressed" property sale'
+        f'"{city}" "{state}" "for sale by owner" -broker -agent',
+        f'"{city}" "{state}" "fixer upper" "cash only" -agent',
+        f'"{city}" "probate" "heirs" property sale',
+        f'"{city}" "divorce" "must sell" house',
+        f'"{city}" "needs tlc" "investment property" -realtor'
     ]
     
     leads_found = []
@@ -213,16 +206,11 @@ def search_off_market(city, state):
 
     for q in queries:
         try:
-            # 'cx' argument forces Google to search ONLY your 1000 configured sites
             res = service.cse().list(q=q, cx=SEARCH_CX, num=10).execute()
-            
             for item in res.get('items', []):
                 snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
-                
-                # regex for contact info in snippet
                 phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
                 emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                
                 leads_found.append({
                     'address': item.get('title'),
                     'phone': phones[0] if phones else 'Check Link',
@@ -233,7 +221,6 @@ def search_off_market(city, state):
         except Exception as e:
             print(f"API Error: {e}")
             continue
-
     return leads_found
 
 # ---------------------------------------------------------
@@ -247,13 +234,12 @@ def dashboard():
     has_pro = check_access(current_user, 'pro')
     has_email = check_access(current_user, 'email')
     
-    # Calculate Trial Time Remaining for display
     trial_time_left = None
     if current_user.trial_active and current_user.trial_start:
         elapsed = datetime.utcnow() - current_user.trial_start
         remaining = timedelta(hours=48) - elapsed
         if remaining.total_seconds() > 0:
-            trial_time_left = int(remaining.total_seconds()) # seconds for JS
+            trial_time_left = int(remaining.total_seconds())
     
     return render_template('dashboard.html', user=current_user, leads=my_leads, has_pro=has_pro, has_email=has_email, trial_left=trial_time_left)
 
@@ -264,16 +250,12 @@ def pricing():
 @app.route('/start-trial')
 @login_required
 def start_trial():
-    # Logic to start 48 hour trial (No CC)
     if current_user.trial_active or current_user.subscription_status != 'free':
         flash("Trial already used or active.", "error")
         return redirect(url_for('dashboard'))
-    
     current_user.trial_active = True
     current_user.trial_start = datetime.utcnow()
-    current_user.subscription_status = 'weekly' # Temporarily grant access status
-    # Note: We use trial_active flag to check expiration, not subscription_end
-    
+    current_user.subscription_status = 'weekly'
     db.session.commit()
     flash("48-Hour Free Trial Started! Enjoy.", "success")
     return redirect(url_for('dashboard'))
@@ -306,34 +288,44 @@ def hunt_leads():
             db.session.add(new_lead)
             count += 1
     db.session.commit()
-    
-    msg = f"Scanned your 1000+ sites. Found {count} new leads."
-    return jsonify({'message': msg})
+    return jsonify({'message': f"Scanned network. Found {count} new leads."})
 
-# --- EMAIL MACHINE ---
+# --- EMAIL MACHINE (BACKGROUND PROCESSOR) ---
+def send_emails_background(app, user_id, subject, body):
+    with app.app_context():
+        user = User.query.get(user_id)
+        leads = Lead.query.filter_by(submitter_id=user_id).all()
+        print(f"--- Starting Email Blast for User {user_id} ---")
+        for lead in leads:
+            if lead.email and '@' in lead.email:
+                print(f"Sending to {lead.email}...")
+                delay = random.uniform(5, 15)
+                time.sleep(delay)
+                lead.emailed_count = (lead.emailed_count or 0) + 1
+                lead.status = "Contacted"
+                db.session.commit()
+        print(f"--- Email Blast Complete ---")
+
 @app.route('/email/campaign', methods=['POST'])
 @login_required
 def email_campaign():
     if not check_access(current_user, 'email'):
         return jsonify({'error': 'Upgrade required.'}), 403
     
-    # Mock sending
-    leads = Lead.query.filter_by(submitter_id=current_user.id).all()
-    for lead in leads:
-        lead.emailed_count = (lead.emailed_count or 0) + 1
-    db.session.commit()
+    subject = request.form.get('subject')
+    body = request.form.get('body')
     
-    return jsonify({'message': f"Sent to {len(leads)} leads successfully."})
+    thread = threading.Thread(target=send_emails_background, args=(app._get_current_object(), current_user.id, subject, body))
+    thread.start()
+    
+    return jsonify({'message': "🚀 Campaign Started! Emails are sending in the background with a 5-15s delay to avoid spam filters."})
 
-# ---------------------------------------------------------
-# 7. CHECKOUT
-# ---------------------------------------------------------
+
 @app.route('/create-checkout-session/<plan_type>')
 @login_required
 def create_checkout_session(plan_type):
     prices = {'weekly': PRICE_WEEKLY, 'monthly': PRICE_MONTHLY, 'lifetime': PRICE_LIFETIME}
     price_id = prices.get(plan_type)
-    
     checkout_session = stripe.checkout.Session.create(
         payment_method_types=['card'],
         line_items=[{'price': price_id, 'quantity': 1}],
@@ -344,44 +336,56 @@ def create_checkout_session(plan_type):
     )
     return redirect(checkout_session.url, code=303)
 
-# ---------------------------------------------------------
-# 8. VIDEO GEN
-# ---------------------------------------------------------
+@app.route('/stripe_webhook', methods=['POST'])
+def stripe_webhook():
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        if event['type'] == 'checkout.session.completed':
+            session = event['data']['object']
+            user = User.query.get(session.get('client_reference_id'))
+            if user:
+                line_items = stripe.checkout.Session.list_line_items(session['id'], limit=1)
+                pid = line_items['data'][0]['price']['id']
+                if pid == PRICE_LIFETIME: user.subscription_status = 'lifetime'
+                elif pid == PRICE_MONTHLY: 
+                    user.subscription_status = 'monthly'
+                    user.subscription_end = datetime.utcnow() + timedelta(days=30)
+                elif pid == PRICE_WEEKLY:
+                    user.subscription_status = 'weekly'
+                    user.subscription_end = datetime.utcnow() + timedelta(days=7)
+                user.trial_active = False
+                db.session.commit()
+    except: return 'Error', 400
+    return jsonify(success=True)
+
 @app.route('/video/create', methods=['POST'])
 @login_required
 def create_video():
     if not check_access(current_user, 'pro'): return jsonify({'error': 'Upgrade required.'}), 403
-    
     desc = request.form.get('description')
     photo = request.files.get('photo')
-    
     try:
         filename = secure_filename(f"img_{int(time.time())}.jpg")
         img_path = os.path.join(UPLOAD_FOLDER, filename)
         photo.save(img_path)
-        
-        # Mock Logic for stability if keys missing
-        if not os.environ.get("GROQ_API_KEY"):
-            return jsonify({'video_url': "", 'error': "API Key Missing"})
-
+        if not os.environ.get("GROQ_API_KEY"): return jsonify({'video_url': "", 'error': "API Key Missing"})
         chat = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": "Write a 15s viral real estate script."}, {"role": "user", "content": desc}],
             model="llama-3.3-70b-versatile"
         )
         script = chat.choices[0].message.content
-
         audio_name = f"audio_{int(time.time())}.mp3"
         audio_path = os.path.join(VIDEO_FOLDER, audio_name)
         tts = gTTS(text=script, lang='en')
         tts.save(audio_path)
-
         audio_clip = AudioFileClip(audio_path)
         video_clip = ImageClip(img_path).set_duration(audio_clip.duration).set_audio(audio_clip)
-        
         vid_name = f"video_{int(time.time())}.mp4"
         out_path = os.path.join(VIDEO_FOLDER, vid_name)
         video_clip.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
-
         return jsonify({'video_url': f"/{VIDEO_FOLDER}/{vid_name}", 'video_path': f"{VIDEO_FOLDER}/{vid_name}"})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
@@ -391,9 +395,6 @@ def social_post():
     if not check_access(current_user, 'pro'): return jsonify({'error': 'Upgrade required.'}), 403
     return jsonify({'message': 'Posted to Socials!'})
 
-# ---------------------------------------------------------
-# 9. GENERAL
-# ---------------------------------------------------------
 @app.route('/')
 def index(): return redirect(url_for('login'))
 
@@ -420,166 +421,26 @@ def register():
     return render_template('register.html')
 
 @app.route('/logout')
-def logout():
-    logout_user()
-    return redirect(url_for('login'))
+def logout(): logout_user(); return redirect(url_for('login'))
 
 @app.route('/sell', methods=['GET', 'POST'])
 def sell_property():
     if request.method == 'POST':
-        lead = Lead(
-            address=request.form.get('address'),
-            phone=request.form.get('phone'),
-            email=request.form.get('email'),
-            year_built=request.form.get('year_built'),
-            square_footage=request.form.get('square_footage'),
-            lot_size=request.form.get('lot_size'),
-            bedrooms=request.form.get('bedrooms'),
-            bathrooms=request.form.get('bathrooms'),
-            hvac_type=request.form.get('hvac_type'),
-            hoa_fees=request.form.get('hoa_fees'),
-            parking_type=request.form.get('parking_type'),
-            source="Seller Wizard",
-            status="New"
-        )
-        db.session.add(lead)
-        db.session.commit()
-        flash('Offer Request Received!', 'success')
-        return redirect(url_for('sell_property'))
+        lead = Lead(address=request.form.get('address'), phone=request.form.get('phone'), email=request.form.get('email'), year_built=request.form.get('year_built'), square_footage=request.form.get('square_footage'), lot_size=request.form.get('lot_size'), bedrooms=request.form.get('bedrooms'), bathrooms=request.form.get('bathrooms'), hvac_type=request.form.get('hvac_type'), hoa_fees=request.form.get('hoa_fees'), parking_type=request.form.get('parking_type'), source="Seller Wizard", status="New")
+        db.session.add(lead); db.session.commit(); flash('Offer Request Received!', 'success'); return redirect(url_for('sell_property'))
     return render_template('sell.html')
 
-@app.route('/stripe_webhook', methods=['POST'])
-def stripe_webhook():
-    payload = request.get_data(as_text=True)
-    sig_header = request.headers.get('Stripe-Signature')
-    webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        if event['type'] == 'checkout.session.completed':
-            session = event['data']['object']
-            user = User.query.get(session.get('client_reference_id'))
-            if user:
-                line_items = stripe.checkout.Session.list_line_items(session['id'], limit=1)
-                pid = line_items['data'][0]['price']['id']
-                if pid == PRICE_LIFETIME: user.subscription_status = 'lifetime'
-                elif pid == PRICE_MONTHLY: 
-                    user.subscription_status = 'monthly'
-                    user.subscription_end = datetime.utcnow() + timedelta(days=30)
-                elif pid == PRICE_WEEKLY:
-                    user.subscription_status = 'weekly'
-                    user.subscription_end = datetime.utcnow() + timedelta(days=7)
-                
-                # If they pay, cancel trial logic to avoid conflicts
-                user.trial_active = False
-                db.session.commit()
-    except: return 'Error', 400
-    return jsonify(success=True)
-
 # ---------------------------------------------------------
-# 10. TEMPLATES (UPDATED WITH TIMER & TRIAL BUTTON)
+# 10. TEMPLATES
 # ---------------------------------------------------------
 html_templates = {
   'pricing.html': """
 {% extends "base.html" %}
 {% block content %}
-<div class="text-center mb-5">
-  <h1 class="fw-bold">🚀 Upgrade to Titan</h1>
-  <p class="lead">Unlock the Scraper, AI Video, and Email Machine.</p>
-  
-  <!-- NEW TRIAL BUTTON -->
-  <div class="mt-4">
-    <a href="/start-trial" class="btn btn-outline-danger btn-lg fw-bold shadow-sm">
-      ⚡ Start 48-Hour Free Trial (No Credit Card)
-    </a>
-    <p class="text-muted small mt-2">Instant access. No commitment.</p>
-  </div>
-
-</div>
-<div class="row text-center mt-5">
-  <div class="col-md-4">
-    <div class="card shadow-sm mb-4">
-      <div class="card-header bg-secondary text-white">Weekly</div>
-      <div class="card-body">
-        <h2>$3<small>/wk</small></h2>
-        <a href="/create-checkout-session/weekly" class="btn btn-outline-dark w-100">Start Weekly</a>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-4">
-    <div class="card shadow mb-4 border-warning">
-      <div class="card-header bg-warning text-dark fw-bold">Lifetime Deal</div>
-      <div class="card-body">
-        <h2>$20<small> (One Time)</small></h2>
-        <a href="/create-checkout-session/lifetime" class="btn btn-dark w-100">Buy Lifetime</a>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-4">
-    <div class="card shadow-sm mb-4 border-primary">
-      <div class="card-header bg-primary text-white">Pro Monthly</div>
-      <div class="card-body">
-        <h2>$50<small>/mo</small></h2>
-        <a href="/create-checkout-session/monthly" class="btn btn-primary w-100">Go Pro</a>
-      </div>
-    </div>
-  </div>
-</div>
+<div class="text-center mb-5"><h1 class="fw-bold">🚀 Upgrade to Titan</h1><p class="lead">Unlock the Scraper, AI Video, and Email Machine.</p><div class="mt-4"><a href="/start-trial" class="btn btn-outline-danger btn-lg fw-bold shadow-sm">⚡ Start 48-Hour Free Trial (No Credit Card)</a><p class="text-muted small mt-2">Instant access. No commitment.</p></div></div><div class="row text-center mt-5"><div class="col-md-4"><div class="card shadow-sm mb-4"><div class="card-header bg-secondary text-white">Weekly</div><div class="card-body"><h2>$3<small>/wk</small></h2><a href="/create-checkout-session/weekly" class="btn btn-outline-dark w-100">Start Weekly</a></div></div></div><div class="col-md-4"><div class="card shadow mb-4 border-warning"><div class="card-header bg-warning text-dark fw-bold">Lifetime Deal</div><div class="card-body"><h2>$20<small> (One Time)</small></h2><a href="/create-checkout-session/lifetime" class="btn btn-dark w-100">Buy Lifetime</a></div></div></div><div class="col-md-4"><div class="card shadow-sm mb-4 border-primary"><div class="card-header bg-primary text-white">Pro Monthly</div><div class="card-body"><h2>$50<small>/mo</small></h2><a href="/create-checkout-session/monthly" class="btn btn-primary w-100">Go Pro</a></div></div></div></div>
 {% endblock %}
 """,
-  'base.html': """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"><title>TITAN</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-<style>.split-bg { background-image: url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); background-size: cover; background-position: center; height: 100vh; }</style>
-</head>
-<body class="bg-light">
-
-<!-- TRIAL TIMER (FIXED TOP LEFT) -->
-{% if trial_left %}
-<div id="trialTimer" class="fw-bold text-white shadow" style="position: fixed; top: 70px; left: 20px; z-index: 9999; background: #dc3545; padding: 10px 15px; border-radius: 5px;">
-    ⏳ Free Trial: <span id="timerSpan">Loading...</span>
-</div>
-<script>
-    let secondsLeft = {{ trial_left }};
-    setInterval(function() {
-        if(secondsLeft <= 0) {
-            document.getElementById('trialTimer').innerHTML = "Trial Expired";
-            return;
-        }
-        secondsLeft--;
-        let h = Math.floor(secondsLeft / 3600);
-        let m = Math.floor((secondsLeft % 3600) / 60);
-        let s = secondsLeft % 60;
-        document.getElementById('timerSpan').innerText = h + "h " + m + "m " + s + "s";
-    }, 1000);
-</script>
-{% endif %}
-
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-<div class="container">
-<a class="navbar-brand" href="/">TITAN ⚡</a>
-<ul class="navbar-nav ms-auto gap-3">
-<li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>
-{% if current_user.is_authenticated %}
-<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li>
-<li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>
-{% else %}
-<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>
-{% endif %}
-</ul>
-</div>
-</nav>
-<div class="container mt-4">
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}
-{% endwith %}
-{% block content %}{% endblock %}
-</div>
-</body>
-</html>
-""",
+  'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>TITAN</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><style>.split-bg { background-image: url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); background-size: cover; background-position: center; height: 100vh; }</style></head><body class="bg-light">{% if trial_left %}<div id="trialTimer" class="fw-bold text-white shadow" style="position: fixed; top: 70px; left: 20px; z-index: 9999; background: #dc3545; padding: 10px 15px; border-radius: 5px;">⏳ Free Trial: <span id="timerSpan">Loading...</span></div><script>let secondsLeft = {{ trial_left }}; setInterval(function() { if(secondsLeft <= 0) { document.getElementById('trialTimer').innerHTML = "Trial Expired"; return; } secondsLeft--; let h = Math.floor(secondsLeft / 3600); let m = Math.floor((secondsLeft % 3600) / 60); let s = secondsLeft % 60; document.getElementById('timerSpan').innerText = h + "h " + m + "m " + s + "s"; }, 1000);</script>{% endif %}<nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="/">TITAN ⚡</a><ul class="navbar-nav ms-auto gap-3"><li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div></body></html>""",
   'dashboard.html': """
 {% extends "base.html" %}
 {% block content %}
@@ -591,37 +452,25 @@ html_templates = {
     <li class="nav-item"><button class="nav-link" id="video-tab" data-bs-toggle="tab" data-bs-target="#video">🎬 AI Video</button></li>
   </ul>
   <div class="tab-content">
-    
-    <!-- MY LEADS -->
     <div class="tab-pane fade show active" id="leads">
         <div class="card shadow-sm"><div class="card-body">
-        <table class="table table-hover">
-            <thead><tr><th>Status</th><th>Address</th><th>Source</th><th>Email Count</th><th>Link</th></tr></thead>
-            <tbody>
-                {% for lead in leads %}
-                <tr>
-                    <td><span class="badge bg-success">{{ lead.status }}</span></td>
-                    <td>{{ lead.address }}</td>
-                    <td>{{ lead.source }}</td>
-                    <td>{{ lead.emailed_count }}</td>
-                    <td><a href="{{ lead.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a></td>
-                </tr>
-                {% else %}<tr><td colspan="5" class="text-center p-4">No leads. Start Hunting!</td></tr>{% endfor %}
-            </tbody>
-        </table>
-        </div></div>
+        <table class="table table-hover"><thead><tr><th>Status</th><th>Address</th><th>Source</th><th>Email Count</th><th>Link</th></tr></thead><tbody>{% for lead in leads %}<tr><td><span class="badge bg-success">{{ lead.status }}</span></td><td>{{ lead.address }}</td><td>{{ lead.source }}</td><td>{{ lead.emailed_count }}</td><td><a href="{{ lead.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a></td></tr>{% else %}<tr><td colspan="5" class="text-center p-4">No leads. Start Hunting!</td></tr>{% endfor %}</tbody></table></div></div>
     </div>
-
-    <!-- DEAL HUNTER (API POWERED) -->
+    
+    <!-- DEAL HUNTER TAB WITH CASCADING DROPDOWNS -->
     <div class="tab-pane fade" id="hunter">
         <div class="card bg-dark text-white">
             <div class="card-body p-5 text-center">
                 <h3 class="fw-bold">🕵️ Google API Search (1000+ Sites)</h3>
-                <p>Scouring your configured network (Craigslist, FSBO, Zillow-clones, etc)</p>
+                <p>Select your market to scan configured networks.</p>
                 {% if has_pro %}
                 <div class="row justify-content-center mt-4">
-                    <div class="col-md-3"><input id="huntCity" class="form-control" placeholder="City"></div>
-                    <div class="col-md-3"><input id="huntState" class="form-control" placeholder="State"></div>
+                    <div class="col-md-4">
+                        <select id="huntState" class="form-select" onchange="loadCities()"><option>Select State</option></select>
+                    </div>
+                    <div class="col-md-4">
+                        <select id="huntCity" class="form-select"><option>Select State First</option></select>
+                    </div>
                     <div class="col-md-3"><button onclick="runHunt()" class="btn btn-warning w-100 fw-bold">Search Network</button></div>
                 </div>
                 <div id="huntStatus" class="mt-3 text-warning"></div>
@@ -632,40 +481,101 @@ html_templates = {
         </div>
     </div>
 
-    <!-- EMAIL MACHINE -->
-    <div class="tab-pane fade" id="email">
-        <div class="card shadow-sm border-warning">
-            <div class="card-header bg-warning text-dark fw-bold">📧 Email Marketing Machine</div>
-            <div class="card-body">
-                {% if has_email %}
-                <div class="mb-3"><label>Subject</label><input id="emailSubject" class="form-control" value="Cash Offer"></div>
-                <div class="mb-3"><label>Body</label><textarea id="emailBody" class="form-control" rows="5">Interested in selling?</textarea></div>
-                <button onclick="sendBlast()" class="btn btn-dark w-100">🚀 Blast to All {{ leads|length }} Leads</button>
-                {% else %}<div class="text-center p-4"><a href="/pricing" class="btn btn-warning">Unlock Email Machine</a></div>{% endif %}
-            </div>
-        </div>
-    </div>
-
-    <!-- VIDEO -->
-    <div class="tab-pane fade" id="video">
-        <div class="card shadow-sm"><div class="card-body text-center">
-            <h3>🎬 AI Content Generator</h3>
-            {% if has_pro %}
-            <input type="file" id="videoPhoto" class="form-control mb-2 w-50 mx-auto">
-            <textarea id="videoInput" class="form-control mb-2 w-50 mx-auto" placeholder="Describe property..."></textarea>
-            <button onclick="createVideo()" class="btn btn-primary">Generate Video</button>
-            <div id="videoResult" class="d-none mt-3"><video id="player" controls class="w-50 rounded border"></video></div>
-            {% else %}<a href="/pricing" class="btn btn-warning mt-3">Upgrade / Start Trial</a>{% endif %}
-        </div></div>
-    </div>
-
+    <div class="tab-pane fade" id="email"><div class="card shadow-sm border-warning"><div class="card-header bg-warning text-dark fw-bold">📧 Email Marketing Machine</div><div class="card-body">{% if has_email %}<div class="mb-3"><label>Subject</label><input id="emailSubject" class="form-control" value="Cash Offer"></div><div class="mb-3"><label>Body</label><textarea id="emailBody" class="form-control" rows="5">Interested in selling?</textarea></div><button onclick="sendBlast()" class="btn btn-dark w-100">🚀 Blast to All {{ leads|length }} Leads</button>{% else %}<div class="text-center p-4"><a href="/pricing" class="btn btn-warning">Unlock Email Machine</a></div>{% endif %}</div></div></div>
+    <div class="tab-pane fade" id="video"><div class="card shadow-sm"><div class="card-body text-center"><h3>🎬 AI Content Generator</h3>{% if has_pro %}<input type="file" id="videoPhoto" class="form-control mb-2 w-50 mx-auto"><textarea id="videoInput" class="form-control mb-2 w-50 mx-auto" placeholder="Describe property..."></textarea><button onclick="createVideo()" class="btn btn-primary">Generate Video</button><div id="videoResult" class="d-none mt-3"><video id="player" controls class="w-50 rounded border"></video></div>{% else %}<a href="/pricing" class="btn btn-warning mt-3">Upgrade / Start Trial</a>{% endif %}</div></div></div>
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// --- MASSIVE CITY DATABASE ---
+const usData = {
+    "AL": ["Birmingham", "Montgomery", "Mobile", "Huntsville", "Tuscaloosa"],
+    "AK": ["Anchorage", "Fairbanks", "Juneau"],
+    "AZ": ["Phoenix", "Tucson", "Mesa", "Chandler", "Scottsdale", "Glendale"],
+    "AR": ["Little Rock", "Fort Smith", "Fayetteville", "Springdale"],
+    "CA": ["Los Angeles", "San Diego", "San Jose", "San Francisco", "Fresno", "Sacramento", "Long Beach", "Oakland", "Bakersfield", "Anaheim"],
+    "CO": ["Denver", "Colorado Springs", "Aurora", "Fort Collins", "Lakewood"],
+    "CT": ["Bridgeport", "New Haven", "Stamford", "Hartford", "Waterbury"],
+    "DE": ["Wilmington", "Dover", "Newark"],
+    "FL": ["Jacksonville", "Miami", "Tampa", "Orlando", "St. Petersburg", "Hialeah", "Tallahassee", "Fort Lauderdale", "Port St. Lucie"],
+    "GA": ["Atlanta", "Augusta", "Columbus", "Macon", "Savannah"],
+    "HI": ["Honolulu", "Hilo", "Kailua"],
+    "ID": ["Boise", "Meridian", "Nampa"],
+    "IL": ["Chicago", "Aurora", "Naperville", "Joliet", "Rockford"],
+    "IN": ["Indianapolis", "Fort Wayne", "Evansville", "South Bend"],
+    "IA": ["Des Moines", "Cedar Rapids", "Davenport"],
+    "KS": ["Wichita", "Overland Park", "Kansas City"],
+    "KY": ["Louisville", "Lexington", "Bowling Green"],
+    "LA": ["New Orleans", "Baton Rouge", "Shreveport", "Lafayette"],
+    "ME": ["Portland", "Lewiston", "Bangor"],
+    "MD": ["Baltimore", "Columbia", "Germantown"],
+    "MA": ["Boston", "Worcester", "Springfield", "Cambridge"],
+    "MI": ["Detroit", "Grand Rapids", "Warren", "Sterling Heights"],
+    "MN": ["Minneapolis", "St. Paul", "Rochester", "Duluth"],
+    "MS": ["Jackson", "Gulfport", "Southaven"],
+    "MO": ["Kansas City", "St. Louis", "Springfield", "Columbia"],
+    "MT": ["Billings", "Missoula", "Great Falls"],
+    "NE": ["Omaha", "Lincoln", "Bellevue"],
+    "NV": ["Las Vegas", "Henderson", "Reno", "North Las Vegas"],
+    "NH": ["Manchester", "Nashua", "Concord"],
+    "NJ": ["Newark", "Jersey City", "Paterson", "Elizabeth"],
+    "NM": ["Albuquerque", "Las Cruces", "Rio Rancho"],
+    "NY": ["New York", "Buffalo", "Rochester", "Yonkers", "Syracuse"],
+    "NC": ["Charlotte", "Raleigh", "Greensboro", "Durham", "Winston-Salem"],
+    "ND": ["Fargo", "Bismarck", "Grand Forks"],
+    "OH": ["Columbus", "Cleveland", "Cincinnati", "Toledo", "Akron"],
+    "OK": ["Oklahoma City", "Tulsa", "Norman", "Broken Arrow"],
+    "OR": ["Portland", "Salem", "Eugene", "Gresham"],
+    "PA": ["Philadelphia", "Pittsburgh", "Allentown", "Erie", "Reading"],
+    "RI": ["Providence", "Warwick", "Cranston"],
+    "SC": ["Charleston", "Columbia", "North Charleston", "Mount Pleasant"],
+    "SD": ["Sioux Falls", "Rapid City", "Aberdeen"],
+    "TN": ["Nashville", "Memphis", "Knoxville", "Chattanooga", "Clarksville"],
+    "TX": ["Houston", "San Antonio", "Dallas", "Austin", "Fort Worth", "El Paso", "Arlington", "Corpus Christi", "Plano"],
+    "UT": ["Salt Lake City", "West Valley City", "Provo", "West Jordan"],
+    "VT": ["Burlington", "South Burlington", "Rutland"],
+    "VA": ["Virginia Beach", "Norfolk", "Chesapeake", "Richmond", "Newport News"],
+    "WA": ["Seattle", "Spokane", "Tacoma", "Vancouver"],
+    "WV": ["Charleston", "Huntington", "Morgantown"],
+    "WI": ["Milwaukee", "Madison", "Green Bay", "Kenosha"],
+    "WY": ["Cheyenne", "Casper", "Laramie"]
+};
+
+// Populate States on Load
+window.onload = function() {
+    const stateSel = document.getElementById("huntState");
+    if(stateSel) {
+        stateSel.innerHTML = '<option value="">Select State</option>';
+        for (let state in usData) {
+            let opt = document.createElement('option');
+            opt.value = state;
+            opt.innerHTML = state;
+            stateSel.appendChild(opt);
+        }
+    }
+};
+
+function loadCities() {
+    const state = document.getElementById("huntState").value;
+    const citySel = document.getElementById("huntCity");
+    citySel.innerHTML = '<option value="">Select City</option>';
+    
+    if(state && usData[state]) {
+        usData[state].forEach(city => {
+            let opt = document.createElement('option');
+            opt.value = city;
+            opt.innerHTML = city;
+            citySel.appendChild(opt);
+        });
+    }
+}
+
 async function runHunt() {
     const city = document.getElementById('huntCity').value;
     const state = document.getElementById('huntState').value;
+    
+    if(!city || !state) return alert("Please select both State and City.");
+    
     document.getElementById('huntStatus').innerText = "Querying API Network...";
     const formData = new FormData(); formData.append('city', city); formData.append('state', state);
     const res = await fetch('/leads/hunt', {method: 'POST', body: formData});

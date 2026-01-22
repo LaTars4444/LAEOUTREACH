@@ -26,6 +26,7 @@ from sqlalchemy import inspect, text
 
 # GOOGLE API CLIENTS
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # AI & PAYMENT CLIENTS
 import stripe
@@ -40,22 +41,18 @@ except:
     HAS_FFMPEG = False
 
 # ---------------------------------------------------------
-# 1. THE "10K" KEYWORD BANK (Condensed for Performance)
+# 1. THE "NUCLEAR" KEYWORD BANK
 # ---------------------------------------------------------
 KEYWORD_BANK = [
-    # MOTIVATION
     "must sell", "motivated seller", "cash only", "relocating", "divorce", "probate", 
     "death in family", "job transfer", "liquidate", "needs cash", "moving out of state", 
-    "urgent", "emergency sale", "pre-foreclosure", "behind on payments", "notice of default",
-    # CONDITION
+    "urgent", "pre-foreclosure", "behind on payments", "notice of default",
     "fixer upper", "needs work", "tlc", "handyman special", "as is", "foundation issues", 
     "fire damage", "water damage", "mold", "hoarder", "vacant", "abandoned", "boarded up", 
     "gutted", "shell", "contractor special", "investment property",
-    # FINANCIAL
     "cash buyer", "investor special", "below market value", "priced to sell", "price reduced", 
     "creative financing", "owner financing", "seller financing", "lease option", "rent to own", 
     "tax lien", "tax deed", "bankruptcy",
-    # DIRECT CONTACT
     "call owner", "text owner", "fsbo", "for sale by owner", "no agents", "no brokers", 
     "call me", "text me", "contact me", "private seller"
 ]
@@ -111,7 +108,6 @@ class User(UserMixin, db.Model):
     subscription_end = db.Column(db.DateTime, nullable=True)
     trial_active = db.Column(db.Boolean, default=False)
     trial_start = db.Column(db.DateTime, nullable=True)
-    # Relationship to Videos
     videos = db.relationship('Video', backref='owner', lazy=True)
 
 class Lead(db.Model):
@@ -153,65 +149,88 @@ with app.app_context():
     db.create_all()
 
 # ---------------------------------------------------------
-# 4. THE VICIOUS SCRAPER (ZILLOW/FSBO + KEYWORDS)
+# 4. BACKGROUND SCRAPER (HIGH VOLUME)
 # ---------------------------------------------------------
-def search_off_market(city, state):
-    print(f"DEBUG: Starting Keyword Scan for {city}, {state}")
-    
-    if not SEARCH_API_KEY or not SEARCH_CX:
-        print("ERROR: Missing Credentials")
-        return []
+def background_scraper_task(app, user_id, city, state):
+    """
+    Runs in a background thread to prevent timeout.
+    Scrapes multiple pages (Pagination) to reach higher volume.
+    """
+    with app.app_context():
+        print(f"--- BACKGROUND SCRAPER STARTED FOR {city} ---")
+        
+        if not SEARCH_API_KEY or not SEARCH_CX:
+            print("ERROR: Missing Credentials")
+            return
 
-    leads_found = []
-    try:
-        service = build("customsearch", "v1", developerKey=SEARCH_API_KEY)
-    except Exception as e:
-        print(f"API Connect Error: {e}")
-        return []
+        try:
+            service = build("customsearch", "v1", developerKey=SEARCH_API_KEY)
+        except Exception as e:
+            print(f"API Connect Error: {e}")
+            return
 
-    # TARGET SPECIFIC SITES
-    target_sites = [
-        "zillow.com", "fsbo.com", "craigslist.org", "facebook.com", 
-        "redfin.com", "realtor.com", "trulia.com"
-    ]
-
-    # Pick 6 random high-intent keywords to combine with sites
-    selected_keywords = random.sample(KEYWORD_BANK, 6)
-
-    for site in target_sites:
-        for keyword in selected_keywords:
-            try:
-                q = f'site:{site} "{city}" "{keyword}"'
-                print(f"Executing: {q}")
-                
-                res = service.cse().list(q=q, cx=SEARCH_CX, num=10).execute()
-                
-                if 'items' not in res: continue
-
-                for item in res.get('items', []):
-                    title = item.get('title', 'No Title')
-                    snippet = (item.get('snippet', '') + " " + title).lower()
-                    link = item.get('link', '#')
-
-                    phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
-                    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                    keyword_match = any(k in snippet for k in KEYWORD_BANK)
-                    
-                    if phones or emails or keyword_match:
-                        leads_found.append({
-                            'address': title[:70],
-                            'phone': phones[0] if phones else 'Check Link',
-                            'email': emails[0] if emails else 'Check Link',
-                            'source': f"{site} ({keyword})",
-                            'link': link
-                        })
+        target_sites = ["zillow.com", "fsbo.com", "craigslist.org", "facebook.com"]
+        # Randomize keywords to avoid patterns
+        selected_keywords = random.sample(KEYWORD_BANK, 5)
+        
+        total_leads_added = 0
+        
+        # Loop through sites and keywords
+        for site in target_sites:
+            for keyword in selected_keywords:
+                # PAGINATION LOOP: Get results 1-10, 11-20, 21-30...
+                # We limit to 3 pages per query to manage API quota (3 * 5 * 4 = 60 queries max)
+                for start_index in [1, 11, 21]: 
+                    try:
+                        q = f'site:{site} "{city}" "{keyword}"'
                         
-            except Exception as e:
-                print(f"Query Error: {e}")
-                time.sleep(1)
+                        # Execute Search with Pagination
+                        res = service.cse().list(q=q, cx=SEARCH_CX, num=10, start=start_index).execute()
+                        
+                        if 'items' not in res: 
+                            break # Stop paging if no results
 
-    print(f"DEBUG: Found {len(leads_found)} leads after Keyword Filtering.")
-    return leads_found
+                        for item in res.get('items', []):
+                            title = item.get('title', 'No Title')
+                            snippet = (item.get('snippet', '') + " " + title).lower()
+                            link = item.get('link', '#')
+
+                            phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
+                            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
+                            keyword_match = any(k in snippet for k in KEYWORD_BANK)
+                            
+                            # Only add if we found something useful
+                            if phones or emails or keyword_match:
+                                # Check duplicate by link
+                                exists = Lead.query.filter_by(link=link, submitter_id=user_id).first()
+                                if not exists:
+                                    new_lead = Lead(
+                                        submitter_id=user_id,
+                                        address=title[:100],
+                                        phone=phones[0] if phones else 'Check Link',
+                                        email=emails[0] if emails else 'Check Link',
+                                        source=f"{site} ({keyword})",
+                                        link=link,
+                                        status="New"
+                                    )
+                                    db.session.add(new_lead)
+                                    total_leads_added += 1
+                        
+                        # Commit every page so we don't lose data if it crashes
+                        db.session.commit()
+                        time.sleep(0.5) # Slight pause to be nice to API
+
+                    except HttpError as e:
+                        if e.resp.status == 403:
+                            print("CRITICAL: API 403 Error. Check API Enablement/Billing.")
+                            return
+                        print(f"HttpError: {e}")
+                        break 
+                    except Exception as e:
+                        print(f"Generic Error: {e}")
+                        continue
+
+        print(f"--- SCRAPER FINISHED. Added {total_leads_added} leads. ---")
 
 # ---------------------------------------------------------
 # 5. EMAIL ENGINE
@@ -312,16 +331,12 @@ def hunt_leads():
     city = request.form.get('city')
     state = request.form.get('state')
     
-    raw_leads = search_off_market(city, state)
+    # LAUNCH BACKGROUND THREAD
+    # This prevents the server from timing out while scraping
+    thread = threading.Thread(target=background_scraper_task, args=(app._get_current_object(), current_user.id, city, state))
+    thread.start()
     
-    count = 0
-    for l in raw_leads:
-        if not Lead.query.filter_by(link=l['link'], submitter_id=current_user.id).first():
-            new_lead = Lead(submitter_id=current_user.id, address=l['address'], phone=l['phone'], email=l['email'], source=l['source'], link=l['link'], status="New")
-            db.session.add(new_lead)
-            count += 1
-    db.session.commit()
-    return jsonify({'message': f"Found {count} high-intent leads!"})
+    return jsonify({'message': f"🚀 Vicious Scan Started for {city}! Running in background (takes ~2 mins). Refresh page soon."})
 
 @app.route('/email/campaign', methods=['POST'])
 @login_required
@@ -578,14 +593,15 @@ function loadCities() { const state = document.getElementById("huntState").value
 async function runHunt() { 
     const city = document.getElementById('huntCity').value; const state = document.getElementById('huntState').value; 
     if(!city || !state) return alert("Please select both State and City."); 
-    document.getElementById('huntStatus').innerText = "Scanning Zillow, Redfin, FSBO with Keywords..."; 
+    document.getElementById('huntStatus').innerText = "Running Vicious Scan (Background Mode)... This will take 2-3 mins."; 
     const formData = new FormData(); formData.append('city', city); formData.append('state', state); 
     
     try {
         const res = await fetch('/leads/hunt', {method: 'POST', body: formData}); 
         const data = await res.json(); 
         if(res.status === 403) window.location.href = '/pricing'; 
-        else { alert(data.message); window.location.reload(); } 
+        else if (res.status === 500) alert(data.error);
+        else { alert(data.message); } 
     } catch (e) { alert("Network error. Check logs."); }
 }
 async function sendBlast() { 
@@ -621,7 +637,7 @@ async function updateStatus(id, status) { await fetch('/leads/update/' + id, {me
 </script>
 {% endblock %}
 """,
- 'login.html': """{% extends "base.html" %} {% block content %} <div class="row shadow-lg rounded overflow-hidden" style="min-height: 80vh;"><div class="col-md-6 d-none d-md-block" style="background: url('https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80') no-repeat center center; background-size: cover;"><div class="h-100 d-flex align-items-center justify-content-center" style="background: rgba(0,0,0,0.4);"><div class="text-white text-center p-4"><h2 class="fw-bold">Titan Intelligence</h2><p>The #1 Platform for Real Estate Investors & Sellers.</p></div></div></div><div class="col-md-6 bg-white d-flex align-items-center"><div class="p-5 w-100"><h3 class="mb-4 fw-bold text-center">Welcome Back</h3><form method="POST"><div class="mb-3"><label class="form-label text-muted">Email</label><input name="email" class="form-control form-control-lg"></div><div class="mb-4"><label class="form-label text-muted">Password</label><input type="password" name="password" class="form-control form-control-lg"></div><button class="btn btn-dark btn-lg w-100 mb-3">Login</button></form><div class="text-center mt-3"><a href="/register">Create Account</a></div></div></div></div> {% endblock %}""",
+ 'login.html': """{% extends "base.html" %} {% block content %} <div class="row shadow-lg rounded overflow-hidden" style="min-height: 80vh;"><div class="col-md-6 d-none d-md-block" style="background: url('https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80') no-repeat center center; background-size: cover;"><div class="h-100 d-flex align-items-center justify-content-center" style="background: rgba(0,0,0,0.4);"><div class="text-white text-center p-4"><h2 class="fw-bold">Titan Intelligence</h2><p>The #1 Platform for Real Estate Investors & Sellers.</p></div></div></div><div class="col-md-6 bg-white d-flex align-items-center"><div class="p-5 w-100"><h3 class="mb-4 fw-bold text-center">Welcome Back</h3><form method="POST"><div class="mb-3"><label class="form-label text-muted">Email</label><input name="email" class="form-control form-control-lg"></div><div class="mb-4"><label class="form-label text-muted">Password</label><input type="password" name="password" class="form-control form-control-lg"></div><button class="btn btn-dark btn-lg w-100 mb-3">Login</button></form><div class="text-center border-top pt-3"><a href="/sell" class="btn btn-warning w-100 fw-bold">💰 Get a Cash Offer (Seller)</a></div><div class="text-center mt-3"><a href="/register">Create Account</a></div></div></div></div> {% endblock %}""",
  'register.html': """{% extends "base.html" %} {% block content %} <form method="POST" class="mt-5 mx-auto" style="max-width:300px"><h3>Register</h3><input name="email" class="form-control mb-2" placeholder="Email"><input type="password" name="password" class="form-control mb-2" placeholder="Password"><button class="btn btn-success w-100">Join</button></form> {% endblock %}""",
  'sell.html': """
 {% extends "base.html" %} 

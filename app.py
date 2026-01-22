@@ -98,16 +98,16 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(150), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=True) 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+     
     # USER-SPECIFIC EMAIL SETTINGS
-    smtp_email = db.Column(db.String(150), nullable=True)     
+    smtp_email = db.Column(db.String(150), nullable=True)   
     smtp_password = db.Column(db.String(150), nullable=True)  
-    
+     
     # Auth Tokens
     google_token = db.Column(db.Text, nullable=True)
     tiktok_token = db.Column(db.Text, nullable=True)
     meta_token = db.Column(db.Text, nullable=True)
-    
+     
     # Subscription & Trial Logic
     subscription_status = db.Column(db.String(50), default='free') 
     subscription_end = db.Column(db.DateTime, nullable=True)
@@ -118,16 +118,16 @@ class Lead(db.Model):
     __tablename__ = 'leads'
     id = db.Column(db.Integer, primary_key=True)
     submitter_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
-    
+     
     # Contact Info
     address = db.Column(db.String(255), nullable=False)
     phone = db.Column(db.String(50), nullable=True)
     email = db.Column(db.String(100), nullable=True)
-    
+     
     # Seller Form Data
     asking_price = db.Column(db.String(50), nullable=True)
     photos = db.Column(db.Text, nullable=True) 
-    
+     
     # Property Details
     year_built = db.Column(db.Integer, nullable=True)
     square_footage = db.Column(db.Integer, nullable=True)
@@ -137,14 +137,14 @@ class Lead(db.Model):
     hvac_type = db.Column(db.String(100), nullable=True)
     hoa_fees = db.Column(db.String(50), nullable=True)
     parking_type = db.Column(db.String(100), nullable=True)
-    
+     
     # Management Data
     distress_type = db.Column(db.String(100)) 
     status = db.Column(db.String(50), default="New") 
     source = db.Column(db.String(50), default="Manual")
     link = db.Column(db.String(500)) 
     emailed_count = db.Column(db.Integer, default=0)
-    
+     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 @login_manager.user_loader
@@ -157,7 +157,7 @@ def load_user(user_id):
 with app.app_context():
     db.create_all()
     inspector = inspect(db.engine)
-    
+     
     # Ensure User Table
     user_columns = [c['name'] for c in inspector.get_columns('users')]
     with db.engine.connect() as conn:
@@ -216,18 +216,18 @@ def search_off_market(city, state):
         return []
 
     print(f"--- VICIOUS SCANNING: {city}, {state} ---")
-    
+     
     # THE NUCLEAR QUERY LIST
     queries = [
         # 1. Zillow & FSBO "Backdoor" (Meta Description Leaks)
         f'site:zillow.com "{city}" "for sale by owner" "call *" -agent',
         f'site:fsbo.com "{city}" "{state}" phone',
-        
+         
         # 2. Classifieds & Community (Direct Owner Posts)
         f'site:craigslist.org "{city}" "real estate" -broker -agent (call|text)',
         f'site:facebook.com "{city}" "selling my house" -group -marketplace',
         f'site:nextdoor.com "{city}" "selling my home" -realtor',
-        
+         
         # 3. Distress & Motivation Keywords
         f'"{city}" "must sell" "relocating" "cash only" house',
         f'"{city}" "needs work" "as is" "fixer upper" phone',
@@ -241,7 +241,7 @@ def search_off_market(city, state):
         f'"{city}" "tax delinquent" list filetype:csv',
         f'"{city}" "eviction" list filetype:pdf'
     ]
-    
+     
     leads_found = []
     service = build("customsearch", "v1", developerKey=SEARCH_API_KEY)
 
@@ -253,32 +253,32 @@ def search_off_market(city, state):
         try:
             print(f"Querying: {q}")
             res = service.cse().list(q=q, cx=SEARCH_CX, num=10).execute()
-            
+             
             for item in res.get('items', []):
                 snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
-                
+                 
                 # Regex for US Phone Numbers
                 phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
                 emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                
+                 
                 # Determine Source Label
                 source_label = "Web"
                 if "zillow" in item.get('link'): source_label = "Zillow Leak"
                 elif "facebook" in item.get('link'): source_label = "Facebook"
                 elif "craigslist" in item.get('link'): source_label = "Craigslist"
                 elif ".pdf" in item.get('link') or ".xls" in item.get('link'): source_label = "Gov File"
-                
+                 
                 leads_found.append({
-                    'address': item.get('title').replace('Zillow', '').replace(' | ', '')[:70],
-                    'phone': phones[0] if phones else 'Check Link',
-                    'email': emails[0] if emails else 'Check Link',
-                    'source': source_label,
-                    'link': item.get('link')
+                  'address': item.get('title').replace('Zillow', '').replace(' | ', '')[:70],
+                  'phone': phones[0] if phones else 'Check Link',
+                  'email': emails[0] if emails else 'Check Link',
+                  'source': source_label,
+                  'link': item.get('link')
                 })
         except Exception as e:
             print(f"API Error on query '{q}': {e}")
             continue
-            
+           
     print(f"--- SCAN COMPLETE. Found {len(leads_found)} raw results. ---")
     return leads_found
 
@@ -292,12 +292,12 @@ def send_emails_background(app, user_id, subject, body, attachment_path):
 
         leads = Lead.query.filter_by(submitter_id=user_id).all()
         print(f"--- Starting Campaign for {user.email} ---")
-        
+         
         try:
             server = smtplib.SMTP("smtp.gmail.com", 587)
             server.starttls()
             server.login(user.smtp_email, user.smtp_password)
-            
+           
             for lead in leads:
                 if lead.email and '@' in lead.email and lead.email != "Check Link":
                     msg = MIMEMultipart()
@@ -305,7 +305,7 @@ def send_emails_background(app, user_id, subject, body, attachment_path):
                     msg['To'] = lead.email
                     msg['Subject'] = subject
                     msg.attach(MIMEText(body, 'plain'))
-                    
+                   
                     if attachment_path and os.path.exists(attachment_path):
                         with open(attachment_path, "rb") as f:
                             part = MIMEBase('application', 'octet-stream')
@@ -313,7 +313,7 @@ def send_emails_background(app, user_id, subject, body, attachment_path):
                         encoders.encode_base64(part)
                         part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(attachment_path)}')
                         msg.attach(part)
-                    
+                   
                     try:
                         server.send_message(msg)
                         lead.emailed_count = (lead.emailed_count or 0) + 1
@@ -321,7 +321,7 @@ def send_emails_background(app, user_id, subject, body, attachment_path):
                         db.session.commit()
                         time.sleep(random.uniform(5, 15)) 
                     except Exception as e: print(f"Send Fail: {e}")
-            
+           
             server.quit()
         except Exception as e: print(f"SMTP Error: {e}")
 
@@ -337,13 +337,13 @@ def send_emails_background(app, user_id, subject, body, attachment_path):
 def dashboard():
     my_leads = Lead.query.filter_by(submitter_id=current_user.id).order_by(Lead.created_at.desc()).all()
     stats = {'total': len(my_leads), 'hot': len([l for l in my_leads if l.status == 'Hot']), 'emails': sum([l.emailed_count or 0 for l in my_leads])}
-    
+     
     seller_submissions = []
     if current_user.email == ADMIN_EMAIL:
         seller_submissions = Lead.query.filter_by(source='Seller Wizard').order_by(Lead.created_at.desc()).all()
-    
+     
     gmail_connected = True if current_user.smtp_email and current_user.smtp_password else False
-    
+     
     trial_time_left = None
     if current_user.trial_active and current_user.trial_start:
         elapsed = datetime.utcnow() - current_user.trial_start
@@ -426,8 +426,12 @@ def email_campaign():
     thread.start()
     return jsonify({'message': "🚀 Campaign Started! Sending from YOUR Gmail."})
 
-@app.route('/pricing'); def pricing(): return render_template('pricing.html')
-@app.route('/start-trial'); 
+# FIXED ROUTE SYNTAX
+@app.route('/pricing')
+def pricing():
+    return render_template('pricing.html')
+
+@app.route('/start-trial')
 @login_required
 def start_trial():
     if current_user.email == ADMIN_EMAIL: return redirect(url_for('dashboard'))
@@ -490,20 +494,33 @@ def social_post():
     data = request.json; platform = data.get('platform', 'Social')
     return jsonify({'message': f'🚀 Queued for upload to {platform} (Draft Mode). Check your app!'})
 
-@app.route('/'); def index(): return redirect(url_for('login'))
-@app.route('/login', methods=['GET', 'POST']); def login(): 
+# FIXED ROUTE SYNTAX
+@app.route('/')
+def index():
+    return redirect(url_for('login'))
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
     if request.method == 'POST':
         user = User.query.filter_by(email=request.form['email']).first()
         if user and (user.password == request.form['password'] or check_password_hash(user.password, request.form['password'])): login_user(user); return redirect(url_for('dashboard'))
         flash('Invalid credentials', 'error')
     return render_template('login.html')
-@app.route('/register', methods=['GET', 'POST']); def register():
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
     if request.method == 'POST':
         if not User.query.filter_by(email=request.form['email']).first():
             hashed = generate_password_hash(request.form['password'], method='scrypt'); user = User(email=request.form['email'], password=hashed); db.session.add(user); db.session.commit(); login_user(user); return redirect(url_for('dashboard'))
     return render_template('register.html')
-@app.route('/logout'); def logout(): logout_user(); return redirect(url_for('login'))
-@app.route('/sell', methods=['GET', 'POST']); def sell_property():
+
+@app.route('/logout')
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+@app.route('/sell', methods=['GET', 'POST'])
+def sell_property():
     if request.method == 'POST':
         photo_files = request.files.getlist('photos'); saved_filenames = []
         for f in photo_files: 
@@ -517,34 +534,34 @@ def social_post():
 # 10. TEMPLATES
 # ---------------------------------------------------------
 html_templates = {
-  'pricing.html': """{% extends "base.html" %} {% block content %} <div class="text-center mb-5"><h1 class="fw-bold">🚀 Upgrade to Titan</h1><p class="lead">Unlock the Vicious Scraper, AI Video, and Email Machine.</p><div class="mt-4"><a href="/start-trial" class="btn btn-outline-danger btn-lg fw-bold shadow-sm">⚡ Start 48-Hour Free Trial (No Credit Card)</a><p class="text-muted small mt-2">Instant access. No commitment.</p></div></div><div class="row text-center mt-5"><div class="col-md-4"><div class="card shadow-sm mb-4"><div class="card-header bg-secondary text-white">Weekly</div><div class="card-body"><h2>$3<small>/wk</small></h2><a href="/create-checkout-session/weekly" class="btn btn-outline-dark w-100">Start Weekly</a></div></div></div><div class="col-md-4"><div class="card shadow mb-4 border-warning"><div class="card-header bg-warning text-dark fw-bold">Lifetime Deal</div><div class="card-body"><h2>$20<small> (One Time)</small></h2><a href="/create-checkout-session/lifetime" class="btn btn-dark w-100">Buy Lifetime</a></div></div></div><div class="col-md-4"><div class="card shadow-sm mb-4 border-primary"><div class="card-header bg-primary text-white">Pro Monthly</div><div class="card-body"><h2>$50<small>/mo</small></h2><a href="/create-checkout-session/monthly" class="btn btn-primary w-100">Go Pro</a></div></div></div></div> {% endblock %}""",
-  'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>TITAN</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><style>.split-bg { background-image: url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); background-size: cover; background-position: center; height: 100vh; }</style></head><body class="bg-light">{% if trial_left %}<div id="trialTimer" class="fw-bold text-white shadow" style="position: fixed; top: 70px; left: 20px; z-index: 9999; background: #dc3545; padding: 10px 15px; border-radius: 5px;">⏳ Free Trial: <span id="timerSpan">Loading...</span></div><script>let secondsLeft = {{ trial_left }}; setInterval(function() { if(secondsLeft <= 0) { document.getElementById('trialTimer').innerHTML = "Trial Expired"; return; } secondsLeft--; let h = Math.floor(secondsLeft / 3600); let m = Math.floor((secondsLeft % 3600) / 60); let s = secondsLeft % 60; document.getElementById('timerSpan').innerText = h + "h " + m + "m " + s + "s"; }, 1000);</script>{% endif %}<nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="/">TITAN ⚡</a><ul class="navbar-nav ms-auto gap-3"><li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div></body></html>""",
-  'dashboard.html': """
+ 'pricing.html': """{% extends "base.html" %} {% block content %} <div class="text-center mb-5"><h1 class="fw-bold">🚀 Upgrade to Titan</h1><p class="lead">Unlock the Vicious Scraper, AI Video, and Email Machine.</p><div class="mt-4"><a href="/start-trial" class="btn btn-outline-danger btn-lg fw-bold shadow-sm">⚡ Start 48-Hour Free Trial (No Credit Card)</a><p class="text-muted small mt-2">Instant access. No commitment.</p></div></div><div class="row text-center mt-5"><div class="col-md-4"><div class="card shadow-sm mb-4"><div class="card-header bg-secondary text-white">Weekly</div><div class="card-body"><h2>$3<small>/wk</small></h2><a href="/create-checkout-session/weekly" class="btn btn-outline-dark w-100">Start Weekly</a></div></div></div><div class="col-md-4"><div class="card shadow mb-4 border-warning"><div class="card-header bg-warning text-dark fw-bold">Lifetime Deal</div><div class="card-body"><h2>$20<small> (One Time)</small></h2><a href="/create-checkout-session/lifetime" class="btn btn-dark w-100">Buy Lifetime</a></div></div></div><div class="col-md-4"><div class="card shadow-sm mb-4 border-primary"><div class="card-header bg-primary text-white">Pro Monthly</div><div class="card-body"><h2>$50<small>/mo</small></h2><a href="/create-checkout-session/monthly" class="btn btn-primary w-100">Go Pro</a></div></div></div></div> {% endblock %}""",
+ 'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>TITAN</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><style>.split-bg { background-image: url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); background-size: cover; background-position: center; height: 100vh; }</style></head><body class="bg-light">{% if trial_left %}<div id="trialTimer" class="fw-bold text-white shadow" style="position: fixed; top: 70px; left: 20px; z-index: 9999; background: #dc3545; padding: 10px 15px; border-radius: 5px;">⏳ Free Trial: <span id="timerSpan">Loading...</span></div><script>let secondsLeft = {{ trial_left }}; setInterval(function() { if(secondsLeft <= 0) { document.getElementById('trialTimer').innerHTML = "Trial Expired"; return; } secondsLeft--; let h = Math.floor(secondsLeft / 3600); let m = Math.floor((secondsLeft % 3600) / 60); let s = secondsLeft % 60; document.getElementById('timerSpan').innerText = h + "h " + m + "m " + s + "s"; }, 1000);</script>{% endif %}<nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="/">TITAN ⚡</a><ul class="navbar-nav ms-auto gap-3"><li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div></body></html>""",
+ 'dashboard.html': """
 {% extends "base.html" %}
 {% block content %}
 <div class="row">
-  {% if is_admin %}<div class="col-12 mb-3"><div class="alert alert-warning fw-bold text-center">👑 WELCOME ADMIN! Global Access Active.</div></div>{% endif %}
+ {% if is_admin %}<div class="col-12 mb-3"><div class="alert alert-warning fw-bold text-center">👑 WELCOME ADMIN! Global Access Active.</div></div>{% endif %}
   
-  <div class="col-12 mb-4"><div class="card shadow-sm"><div class="card-body d-flex justify-content-around">
-    <div class="text-center"><h3>{{ stats.total }}</h3><small class="text-muted">Total Leads</small></div>
-    <div class="text-center text-success"><h3>{{ stats.hot }}</h3><small class="text-muted">Hot Leads</small></div>
-    <div class="text-center text-primary"><h3>{{ stats.emails }}</h3><small class="text-muted">Emails Sent</small></div>
-    <div class="align-self-center">
-        <button class="btn btn-outline-primary btn-sm me-2" data-bs-toggle="modal" data-bs-target="#settingsModal">⚙️ Settings</button>
-        <button class="btn btn-outline-success btn-sm me-2" data-bs-toggle="modal" data-bs-target="#addLeadModal">➕ Add Lead</button>
-        <a href="/leads/export" class="btn btn-outline-dark btn-sm">📥 Export CSV</a>
-    </div>
-  </div></div></div>
-
-  <ul class="nav nav-tabs mb-4" id="myTab" role="tablist"><li class="nav-item"><button class="nav-link active" id="leads-tab" data-bs-toggle="tab" data-bs-target="#leads">🏠 My Leads</button></li>{% if is_admin %}<li class="nav-item"><button class="nav-link fw-bold text-danger" id="inbox-tab" data-bs-toggle="tab" data-bs-target="#inbox">📥 Seller Inbox</button></li>{% endif %}<li class="nav-item"><button class="nav-link" id="hunter-tab" data-bs-toggle="tab" data-bs-target="#hunter">🕵️ Vicious Hunter</button></li><li class="nav-item"><button class="nav-link" id="email-tab" data-bs-toggle="tab" data-bs-target="#email">📧 Email Machine</button></li><li class="nav-item"><button class="nav-link" id="video-tab" data-bs-toggle="tab" data-bs-target="#video">🎬 AI Video</button></li></ul>
-  
-  <div class="tab-content">
-    <div class="tab-pane fade show active" id="leads"><div class="card shadow-sm"><div class="card-body"><table class="table table-hover"><thead><tr><th>Status</th><th>Address</th><th>Source</th><th>Email Count</th><th>Link</th></tr></thead><tbody>{% for lead in leads %}<tr><td><select class="form-select form-select-sm" onchange="updateStatus({{ lead.id }}, this.value)"><option {% if lead.status == 'New' %}selected{% endif %}>New</option><option {% if lead.status == 'Hot' %}selected{% endif %}>Hot</option><option {% if lead.status == 'Contacted' %}selected{% endif %}>Contacted</option><option {% if lead.status == 'Dead' %}selected{% endif %}>Dead</option></select></td><td>{{ lead.address }}</td><td>{{ lead.source }}</td><td>{{ lead.emailed_count }}</td><td><a href="{{ lead.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a></td></tr>{% else %}<tr><td colspan="5" class="text-center p-4">No leads. Start Hunting!</td></tr>{% endfor %}</tbody></table></div></div></div>
-    {% if is_admin %}<div class="tab-pane fade" id="inbox"><div class="card shadow-sm border-danger"><div class="card-header bg-danger text-white fw-bold">Seller Form Submissions</div><div class="card-body table-responsive"><table class="table table-striped"><thead><tr><th>Address</th><th>Price</th><th>Contact</th><th>Details</th><th>Photos</th></tr></thead><tbody>{% for s in seller_inbox %}<tr><td class="fw-bold">{{ s.address }}</td><td class="text-success fw-bold">{{ s.asking_price or 'N/A' }}</td><td>{{ s.phone }}<br>{{ s.email }}</td><td><small><b>Built:</b> {{ s.year_built }}<br><b>SqFt:</b> {{ s.square_footage }}<br><b>HVAC:</b> {{ s.hvac_type }}</small></td><td>{% if s.photos %}<span class="badge bg-primary">📸 Photos</span>{% else %}<span class="text-muted">No Pics</span>{% endif %}</td></tr>{% else %}<tr><td colspan="7" class="text-center">No submissions yet.</td></tr>{% endfor %}</tbody></table></div></div></div>{% endif %}
-    <div class="tab-pane fade" id="hunter"><div class="card bg-dark text-white"><div class="card-body p-5 text-center"><h3 class="fw-bold">🕵️ Vicious Internet Scraper</h3><p>Scouring Facebook, Craigslist, Gov Files, and Zillow Backdoors.</p>{% if has_pro %}<div class="row justify-content-center mt-4"><div class="col-md-4"><select id="huntState" class="form-select" onchange="loadCities()"><option>Select State</option></select></div><div class="col-md-4"><select id="huntCity" class="form-select"><option>Select State First</option></select></div><div class="col-md-3"><button onclick="runHunt()" class="btn btn-warning w-100 fw-bold">Start Vicious Scan</button></div></div><div id="huntStatus" class="mt-3 text-warning"></div>{% else %}<div class="mt-4"><a href="/pricing" class="btn btn-warning">Upgrade / Start Trial</a></div>{% endif %}</div></div></div>
-    <div class="tab-pane fade" id="email"><div class="card shadow-sm border-warning"><div class="card-header bg-warning text-dark fw-bold">📧 Email Marketing Machine</div><div class="card-body">{% if has_email %}{% if not gmail_connected %}<div class="alert alert-danger">⚠️ You must connect your Gmail in <b>Settings</b> before sending emails!</div>{% endif %}<div class="mb-3"><label>Subject</label><input id="emailSubject" class="form-control" value="Cash Offer"></div><div class="mb-3"><label>Body</label><textarea id="emailBody" class="form-control" rows="5">Interested in selling?</textarea></div><div class="mb-3"><label>📎 Attach PDF (Contract/Flyer) - Optional</label><input type="file" id="emailAttachment" class="form-control" accept="application/pdf"></div><button onclick="sendBlast()" class="btn btn-dark w-100" {% if not gmail_connected %}disabled{% endif %}>🚀 Blast to All {{ leads|length }} Leads</button>{% else %}<div class="text-center p-4"><a href="/pricing" class="btn btn-warning">Unlock Email Machine</a></div>{% endif %}</div></div></div>
-    <div class="tab-pane fade" id="video"><div class="card shadow-sm"><div class="card-body text-center"><h3>🎬 AI Content Generator</h3>{% if has_pro %}<input type="file" id="videoPhoto" class="form-control mb-2 w-50 mx-auto"><textarea id="videoInput" class="form-control mb-2 w-50 mx-auto" placeholder="Describe property..."></textarea><button onclick="createVideo()" class="btn btn-primary">Generate Video</button><div id="videoResult" class="d-none mt-3"><video id="player" controls class="w-50 rounded border mb-3"></video><div class="d-flex gap-3 justify-content-center"><button onclick="postSocial('TikTok')" class="btn btn-dark fw-bold" style="background-color: #ff0050; border: none;">🎵 Post to TikTok</button><button onclick="postSocial('YouTube')" class="btn btn-danger fw-bold">🟥 Post to YouTube</button></div></div>{% else %}<a href="/pricing" class="btn btn-warning mt-3">Upgrade / Start Trial</a>{% endif %}</div></div></div>
+ <div class="col-12 mb-4"><div class="card shadow-sm"><div class="card-body d-flex justify-content-around">
+  <div class="text-center"><h3>{{ stats.total }}</h3><small class="text-muted">Total Leads</small></div>
+  <div class="text-center text-success"><h3>{{ stats.hot }}</h3><small class="text-muted">Hot Leads</small></div>
+  <div class="text-center text-primary"><h3>{{ stats.emails }}</h3><small class="text-muted">Emails Sent</small></div>
+  <div class="align-self-center">
+    <button class="btn btn-outline-primary btn-sm me-2" data-bs-toggle="modal" data-bs-target="#settingsModal">⚙️ Settings</button>
+    <button class="btn btn-outline-success btn-sm me-2" data-bs-toggle="modal" data-bs-target="#addLeadModal">➕ Add Lead</button>
+    <a href="/leads/export" class="btn btn-outline-dark btn-sm">📥 Export CSV</a>
   </div>
+ </div></div></div>
+
+ <ul class="nav nav-tabs mb-4" id="myTab" role="tablist"><li class="nav-item"><button class="nav-link active" id="leads-tab" data-bs-toggle="tab" data-bs-target="#leads">🏠 My Leads</button></li>{% if is_admin %}<li class="nav-item"><button class="nav-link fw-bold text-danger" id="inbox-tab" data-bs-toggle="tab" data-bs-target="#inbox">📥 Seller Inbox</button></li>{% endif %}<li class="nav-item"><button class="nav-link" id="hunter-tab" data-bs-toggle="tab" data-bs-target="#hunter">🕵️ Vicious Hunter</button></li><li class="nav-item"><button class="nav-link" id="email-tab" data-bs-toggle="tab" data-bs-target="#email">📧 Email Machine</button></li><li class="nav-item"><button class="nav-link" id="video-tab" data-bs-toggle="tab" data-bs-target="#video">🎬 AI Video</button></li></ul>
+  
+ <div class="tab-content">
+  <div class="tab-pane fade show active" id="leads"><div class="card shadow-sm"><div class="card-body"><table class="table table-hover"><thead><tr><th>Status</th><th>Address</th><th>Source</th><th>Email Count</th><th>Link</th></tr></thead><tbody>{% for lead in leads %}<tr><td><select class="form-select form-select-sm" onchange="updateStatus({{ lead.id }}, this.value)"><option {% if lead.status == 'New' %}selected{% endif %}>New</option><option {% if lead.status == 'Hot' %}selected{% endif %}>Hot</option><option {% if lead.status == 'Contacted' %}selected{% endif %}>Contacted</option><option {% if lead.status == 'Dead' %}selected{% endif %}>Dead</option></select></td><td>{{ lead.address }}</td><td>{{ lead.source }}</td><td>{{ lead.emailed_count }}</td><td><a href="{{ lead.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a></td></tr>{% else %}<tr><td colspan="5" class="text-center p-4">No leads. Start Hunting!</td></tr>{% endfor %}</tbody></table></div></div></div>
+  {% if is_admin %}<div class="tab-pane fade" id="inbox"><div class="card shadow-sm border-danger"><div class="card-header bg-danger text-white fw-bold">Seller Form Submissions</div><div class="card-body table-responsive"><table class="table table-striped"><thead><tr><th>Address</th><th>Price</th><th>Contact</th><th>Details</th><th>Photos</th></tr></thead><tbody>{% for s in seller_inbox %}<tr><td class="fw-bold">{{ s.address }}</td><td class="text-success fw-bold">{{ s.asking_price or 'N/A' }}</td><td>{{ s.phone }}<br>{{ s.email }}</td><td><small><b>Built:</b> {{ s.year_built }}<br><b>SqFt:</b> {{ s.square_footage }}<br><b>HVAC:</b> {{ s.hvac_type }}</small></td><td>{% if s.photos %}<span class="badge bg-primary">📸 Photos</span>{% else %}<span class="text-muted">No Pics</span>{% endif %}</td></tr>{% else %}<tr><td colspan="7" class="text-center">No submissions yet.</td></tr>{% endfor %}</tbody></table></div></div></div>{% endif %}
+  <div class="tab-pane fade" id="hunter"><div class="card bg-dark text-white"><div class="card-body p-5 text-center"><h3 class="fw-bold">🕵️ Vicious Internet Scraper</h3><p>Scouring Facebook, Craigslist, Gov Files, and Zillow Backdoors.</p>{% if has_pro %}<div class="row justify-content-center mt-4"><div class="col-md-4"><select id="huntState" class="form-select" onchange="loadCities()"><option>Select State</option></select></div><div class="col-md-4"><select id="huntCity" class="form-select"><option>Select State First</option></select></div><div class="col-md-3"><button onclick="runHunt()" class="btn btn-warning w-100 fw-bold">Start Vicious Scan</button></div></div><div id="huntStatus" class="mt-3 text-warning"></div>{% else %}<div class="mt-4"><a href="/pricing" class="btn btn-warning">Upgrade / Start Trial</a></div>{% endif %}</div></div></div>
+  <div class="tab-pane fade" id="email"><div class="card shadow-sm border-warning"><div class="card-header bg-warning text-dark fw-bold">📧 Email Marketing Machine</div><div class="card-body">{% if has_email %}{% if not gmail_connected %}<div class="alert alert-danger">⚠️ You must connect your Gmail in <b>Settings</b> before sending emails!</div>{% endif %}<div class="mb-3"><label>Subject</label><input id="emailSubject" class="form-control" value="Cash Offer"></div><div class="mb-3"><label>Body</label><textarea id="emailBody" class="form-control" rows="5">Interested in selling?</textarea></div><div class="mb-3"><label>📎 Attach PDF (Contract/Flyer) - Optional</label><input type="file" id="emailAttachment" class="form-control" accept="application/pdf"></div><button onclick="sendBlast()" class="btn btn-dark w-100" {% if not gmail_connected %}disabled{% endif %}>🚀 Blast to All {{ leads|length }} Leads</button>{% else %}<div class="text-center p-4"><a href="/pricing" class="btn btn-warning">Unlock Email Machine</a></div>{% endif %}</div></div></div>
+  <div class="tab-pane fade" id="video"><div class="card shadow-sm"><div class="card-body text-center"><h3>🎬 AI Content Generator</h3>{% if has_pro %}<input type="file" id="videoPhoto" class="form-control mb-2 w-50 mx-auto"><textarea id="videoInput" class="form-control mb-2 w-50 mx-auto" placeholder="Describe property..."></textarea><button onclick="createVideo()" class="btn btn-primary">Generate Video</button><div id="videoResult" class="d-none mt-3"><video id="player" controls class="w-50 rounded border mb-3"></video><div class="d-flex gap-3 justify-content-center"><button onclick="postSocial('TikTok')" class="btn btn-dark fw-bold" style="background-color: #ff0050; border: none;">🎵 Post to TikTok</button><button onclick="postSocial('YouTube')" class="btn btn-danger fw-bold">🟥 Post to YouTube</button></div></div>{% else %}<a href="/pricing" class="btn btn-warning mt-3">Upgrade / Start Trial</a>{% endif %}</div></div></div>
+ </div>
 </div>
 
 <!-- SETTINGS MODAL -->
@@ -557,56 +574,56 @@ html_templates = {
 <script>
 // --- MASSIVE CITY DATABASE ---
 const usData = {
-    "AL": ["Birmingham", "Montgomery", "Mobile", "Huntsville", "Tuscaloosa"],
-    "AK": ["Anchorage", "Fairbanks", "Juneau"],
-    "AZ": ["Phoenix", "Tucson", "Mesa", "Chandler", "Scottsdale", "Glendale"],
-    "AR": ["Little Rock", "Fort Smith", "Fayetteville", "Springdale"],
-    "CA": ["Los Angeles", "San Diego", "San Jose", "San Francisco", "Fresno", "Sacramento", "Long Beach", "Oakland", "Bakersfield", "Anaheim"],
-    "CO": ["Denver", "Colorado Springs", "Aurora", "Fort Collins", "Lakewood"],
-    "CT": ["Bridgeport", "New Haven", "Stamford", "Hartford", "Waterbury"],
-    "DE": ["Wilmington", "Dover", "Newark"],
-    "FL": ["Jacksonville", "Miami", "Tampa", "Orlando", "St. Petersburg", "Hialeah", "Tallahassee", "Fort Lauderdale", "Port St. Lucie"],
-    "GA": ["Atlanta", "Augusta", "Columbus", "Macon", "Savannah"],
-    "HI": ["Honolulu", "Hilo", "Kailua"],
-    "ID": ["Boise", "Meridian", "Nampa"],
-    "IL": ["Chicago", "Aurora", "Naperville", "Joliet", "Rockford"],
-    "IN": ["Indianapolis", "Fort Wayne", "Evansville", "South Bend"],
-    "IA": ["Des Moines", "Cedar Rapids", "Davenport"],
-    "KS": ["Wichita", "Overland Park", "Kansas City"],
-    "KY": ["Louisville", "Lexington", "Bowling Green"],
-    "LA": ["New Orleans", "Baton Rouge", "Shreveport", "Lafayette"],
-    "ME": ["Portland", "Lewiston", "Bangor"],
-    "MD": ["Baltimore", "Columbia", "Germantown"],
-    "MA": ["Boston", "Worcester", "Springfield", "Cambridge"],
-    "MI": ["Detroit", "Grand Rapids", "Warren", "Sterling Heights"],
-    "MN": ["Minneapolis", "St. Paul", "Rochester", "Duluth"],
-    "MS": ["Jackson", "Gulfport", "Southaven"],
-    "MO": ["Kansas City", "St. Louis", "Springfield", "Columbia"],
-    "MT": ["Billings", "Missoula", "Great Falls"],
-    "NE": ["Omaha", "Lincoln", "Bellevue"],
-    "NV": ["Las Vegas", "Henderson", "Reno", "North Las Vegas"],
-    "NH": ["Manchester", "Nashua", "Concord"],
-    "NJ": ["Newark", "Jersey City", "Paterson", "Elizabeth"],
-    "NM": ["Albuquerque", "Las Cruces", "Rio Rancho"],
-    "NY": ["New York", "Buffalo", "Rochester", "Yonkers", "Syracuse"],
-    "NC": ["Charlotte", "Raleigh", "Greensboro", "Durham", "Winston-Salem"],
-    "ND": ["Fargo", "Bismarck", "Grand Forks"],
-    "OH": ["Columbus", "Cleveland", "Cincinnati", "Toledo", "Akron"],
-    "OK": ["Oklahoma City", "Tulsa", "Norman", "Broken Arrow"],
-    "OR": ["Portland", "Salem", "Eugene", "Gresham"],
-    "PA": ["Philadelphia", "Pittsburgh", "Allentown", "Erie", "Reading"],
-    "RI": ["Providence", "Warwick", "Cranston"],
-    "SC": ["Charleston", "Columbia", "North Charleston", "Mount Pleasant"],
-    "SD": ["Sioux Falls", "Rapid City", "Aberdeen"],
-    "TN": ["Nashville", "Memphis", "Knoxville", "Chattanooga", "Clarksville"],
-    "TX": ["Houston", "San Antonio", "Dallas", "Austin", "Fort Worth", "El Paso", "Arlington", "Corpus Christi", "Plano"],
-    "UT": ["Salt Lake City", "West Valley City", "Provo", "West Jordan"],
-    "VT": ["Burlington", "South Burlington", "Rutland"],
-    "VA": ["Virginia Beach", "Norfolk", "Chesapeake", "Richmond", "Newport News"],
-    "WA": ["Seattle", "Spokane", "Tacoma", "Vancouver"],
-    "WV": ["Charleston", "Huntington", "Morgantown"],
-    "WI": ["Milwaukee", "Madison", "Green Bay", "Kenosha"],
-    "WY": ["Cheyenne", "Casper", "Laramie"]
+  "AL": ["Birmingham", "Montgomery", "Mobile", "Huntsville", "Tuscaloosa"],
+  "AK": ["Anchorage", "Fairbanks", "Juneau"],
+  "AZ": ["Phoenix", "Tucson", "Mesa", "Chandler", "Scottsdale", "Glendale"],
+  "AR": ["Little Rock", "Fort Smith", "Fayetteville", "Springdale"],
+  "CA": ["Los Angeles", "San Diego", "San Jose", "San Francisco", "Fresno", "Sacramento", "Long Beach", "Oakland", "Bakersfield", "Anaheim"],
+  "CO": ["Denver", "Colorado Springs", "Aurora", "Fort Collins", "Lakewood"],
+  "CT": ["Bridgeport", "New Haven", "Stamford", "Hartford", "Waterbury"],
+  "DE": ["Wilmington", "Dover", "Newark"],
+  "FL": ["Jacksonville", "Miami", "Tampa", "Orlando", "St. Petersburg", "Hialeah", "Tallahassee", "Fort Lauderdale", "Port St. Lucie"],
+  "GA": ["Atlanta", "Augusta", "Columbus", "Macon", "Savannah"],
+  "HI": ["Honolulu", "Hilo", "Kailua"],
+  "ID": ["Boise", "Meridian", "Nampa"],
+  "IL": ["Chicago", "Aurora", "Naperville", "Joliet", "Rockford"],
+  "IN": ["Indianapolis", "Fort Wayne", "Evansville", "South Bend"],
+  "IA": ["Des Moines", "Cedar Rapids", "Davenport"],
+  "KS": ["Wichita", "Overland Park", "Kansas City"],
+  "KY": ["Louisville", "Lexington", "Bowling Green"],
+  "LA": ["New Orleans", "Baton Rouge", "Shreveport", "Lafayette"],
+  "ME": ["Portland", "Lewiston", "Bangor"],
+  "MD": ["Baltimore", "Columbia", "Germantown"],
+  "MA": ["Boston", "Worcester", "Springfield", "Cambridge"],
+  "MI": ["Detroit", "Grand Rapids", "Warren", "Sterling Heights"],
+  "MN": ["Minneapolis", "St. Paul", "Rochester", "Duluth"],
+  "MS": ["Jackson", "Gulfport", "Southaven"],
+  "MO": ["Kansas City", "St. Louis", "Springfield", "Columbia"],
+  "MT": ["Billings", "Missoula", "Great Falls"],
+  "NE": ["Omaha", "Lincoln", "Bellevue"],
+  "NV": ["Las Vegas", "Henderson", "Reno", "North Las Vegas"],
+  "NH": ["Manchester", "Nashua", "Concord"],
+  "NJ": ["Newark", "Jersey City", "Paterson", "Elizabeth"],
+  "NM": ["Albuquerque", "Las Cruces", "Rio Rancho"],
+  "NY": ["New York", "Buffalo", "Rochester", "Yonkers", "Syracuse"],
+  "NC": ["Charlotte", "Raleigh", "Greensboro", "Durham", "Winston-Salem"],
+  "ND": ["Fargo", "Bismarck", "Grand Forks"],
+  "OH": ["Columbus", "Cleveland", "Cincinnati", "Toledo", "Akron"],
+  "OK": ["Oklahoma City", "Tulsa", "Norman", "Broken Arrow"],
+  "OR": ["Portland", "Salem", "Eugene", "Gresham"],
+  "PA": ["Philadelphia", "Pittsburgh", "Allentown", "Erie", "Reading"],
+  "RI": ["Providence", "Warwick", "Cranston"],
+  "SC": ["Charleston", "Columbia", "North Charleston", "Mount Pleasant"],
+  "SD": ["Sioux Falls", "Rapid City", "Aberdeen"],
+  "TN": ["Nashville", "Memphis", "Knoxville", "Chattanooga", "Clarksville"],
+  "TX": ["Houston", "San Antonio", "Dallas", "Austin", "Fort Worth", "El Paso", "Arlington", "Corpus Christi", "Plano"],
+  "UT": ["Salt Lake City", "West Valley City", "Provo", "West Jordan"],
+  "VT": ["Burlington", "South Burlington", "Rutland"],
+  "VA": ["Virginia Beach", "Norfolk", "Chesapeake", "Richmond", "Newport News"],
+  "WA": ["Seattle", "Spokane", "Tacoma", "Vancouver"],
+  "WV": ["Charleston", "Huntington", "Morgantown"],
+  "WI": ["Milwaukee", "Madison", "Green Bay", "Kenosha"],
+  "WY": ["Cheyenne", "Casper", "Laramie"]
 };
 window.onload = function() { const stateSel = document.getElementById("huntState"); if(stateSel) { stateSel.innerHTML = '<option value="">Select State</option>'; for (let state in usData) { let opt = document.createElement('option'); opt.value = state; opt.innerHTML = state; stateSel.appendChild(opt); } } };
 function loadCities() { const state = document.getElementById("huntState").value; const citySel = document.getElementById("huntCity"); citySel.innerHTML = '<option value="">Select City</option>'; if(state && usData[state]) { usData[state].forEach(city => { let opt = document.createElement('option'); opt.value = city; opt.innerHTML = city; citySel.appendChild(opt); }); } }
@@ -618,39 +635,39 @@ async function updateStatus(id, status) { await fetch('/leads/update/' + id, {me
 </script>
 {% endblock %}
 """,
-  'login.html': """{% extends "base.html" %} {% block content %} <div class="row shadow-lg rounded overflow-hidden" style="min-height: 80vh;"><div class="col-md-6 d-none d-md-block" style="background: url('https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80') no-repeat center center; background-size: cover;"><div class="h-100 d-flex align-items-center justify-content-center" style="background: rgba(0,0,0,0.4);"><div class="text-white text-center p-4"><h2 class="fw-bold">Titan Intelligence</h2><p>The #1 Platform for Real Estate Investors & Sellers.</p></div></div></div><div class="col-md-6 bg-white d-flex align-items-center"><div class="p-5 w-100"><h3 class="mb-4 fw-bold text-center">Welcome Back</h3><form method="POST"><div class="mb-3"><label class="form-label text-muted">Email</label><input name="email" class="form-control form-control-lg"></div><div class="mb-4"><label class="form-label text-muted">Password</label><input type="password" name="password" class="form-control form-control-lg"></div><button class="btn btn-dark btn-lg w-100 mb-3">Login</button></form><div class="text-center border-top pt-3"><a href="/sell" class="btn btn-warning w-100 fw-bold">💰 I am a Seller (Get Cash Offer)</a></div><div class="text-center mt-3"><a href="/register">Create Account</a></div></div></div></div> {% endblock %}""",
-  'register.html': """{% extends "base.html" %} {% block content %} <form method="POST" class="mt-5 mx-auto" style="max-width:300px"><h3>Register</h3><input name="email" class="form-control mb-2" placeholder="Email"><input type="password" name="password" class="form-control mb-2" placeholder="Password"><button class="btn btn-success w-100">Join</button></form> {% endblock %}""",
-  'sell.html': """
+ 'login.html': """{% extends "base.html" %} {% block content %} <div class="row shadow-lg rounded overflow-hidden" style="min-height: 80vh;"><div class="col-md-6 d-none d-md-block" style="background: url('https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80') no-repeat center center; background-size: cover;"><div class="h-100 d-flex align-items-center justify-content-center" style="background: rgba(0,0,0,0.4);"><div class="text-white text-center p-4"><h2 class="fw-bold">Titan Intelligence</h2><p>The #1 Platform for Real Estate Investors & Sellers.</p></div></div></div><div class="col-md-6 bg-white d-flex align-items-center"><div class="p-5 w-100"><h3 class="mb-4 fw-bold text-center">Welcome Back</h3><form method="POST"><div class="mb-3"><label class="form-label text-muted">Email</label><input name="email" class="form-control form-control-lg"></div><div class="mb-4"><label class="form-label text-muted">Password</label><input type="password" name="password" class="form-control form-control-lg"></div><button class="btn btn-dark btn-lg w-100 mb-3">Login</button></form><div class="text-center border-top pt-3"><a href="/sell" class="btn btn-warning w-100 fw-bold">💰 I am a Seller (Get Cash Offer)</a></div><div class="text-center mt-3"><a href="/register">Create Account</a></div></div></div></div> {% endblock %}""",
+ 'register.html': """{% extends "base.html" %} {% block content %} <form method="POST" class="mt-5 mx-auto" style="max-width:300px"><h3>Register</h3><input name="email" class="form-control mb-2" placeholder="Email"><input type="password" name="password" class="form-control mb-2" placeholder="Password"><button class="btn btn-success w-100">Join</button></form> {% endblock %}""",
+ 'sell.html': """
 {% extends "base.html" %} 
 {% block content %}
 <div class="container mt-4" style="max-width: 800px;">
-    <h2 class="text-center fw-bold mb-4">Get Your Cash Offer</h2>
-    <div class="progress mb-4" style="height: 5px;"><div class="progress-bar bg-success" id="pBar" role="progressbar" style="width: 33%;"></div></div>
-    <form method="POST" id="sellerForm" class="card shadow-sm p-4" enctype="multipart/form-data">
-        <div id="step1">
-            <h4 class="mb-3">📍 Location & Contact</h4>
-            <div class="mb-3"><label>Address</label><input name="address" class="form-control" required></div>
-            <div class="row"><div class="col-md-6"><label>Phone</label><input name="phone" class="form-control" required></div><div class="col-md-6"><label>Email</label><input name="email" class="form-control" required></div></div>
-            <button type="button" class="btn btn-primary w-100 mt-3" onclick="nextStep(2)">Next</button>
-        </div>
-        <div id="step2" class="d-none">
-            <h4 class="mb-3">🏠 Details</h4>
-            <div class="row g-3">
-                <div class="col-6"><label>Year Built</label><input name="year_built" class="form-control"></div>
-                <div class="col-6"><label>Sq Ft</label><input name="square_footage" class="form-control"></div>
-                <div class="col-6"><label>Beds</label><input name="bedrooms" class="form-control"></div>
-                <div class="col-6"><label>Baths</label><input name="bathrooms" class="form-control"></div>
-            </div>
-            <div class="d-flex gap-2 mt-4"><button type="button" class="btn btn-secondary w-50" onclick="nextStep(1)">Back</button><button type="button" class="btn btn-primary w-50" onclick="nextStep(3)">Next</button></div>
-        </div>
-        <div id="step3" class="d-none">
-            <h4 class="mb-3">✨ Final Touches</h4>
-            <div class="mb-3"><label class="fw-bold">💰 Asking Price (Optional)</label><input name="asking_price" class="form-control" placeholder="e.g. $250,000"></div>
-            <div class="mb-3"><label class="fw-bold">📸 Upload Photos (Optional)</label><input type="file" name="photos" class="form-control" multiple accept="image/*"></div>
-            <div class="mb-3"><label>Parking</label><select name="parking_type" class="form-select"><option>Garage</option><option>Driveway</option><option>Street</option></select></div>
-            <div class="d-flex gap-2 mt-4"><button type="button" class="btn btn-secondary w-50" onclick="nextStep(2)">Back</button><button type="submit" class="btn btn-success w-50">Submit</button></div>
-        </div>
-    </form>
+  <h2 class="text-center fw-bold mb-4">Get Your Cash Offer</h2>
+  <div class="progress mb-4" style="height: 5px;"><div class="progress-bar bg-success" id="pBar" role="progressbar" style="width: 33%;"></div></div>
+  <form method="POST" id="sellerForm" class="card shadow-sm p-4" enctype="multipart/form-data">
+    <div id="step1">
+      <h4 class="mb-3">📍 Location & Contact</h4>
+      <div class="mb-3"><label>Address</label><input name="address" class="form-control" required></div>
+      <div class="row"><div class="col-md-6"><label>Phone</label><input name="phone" class="form-control" required></div><div class="col-md-6"><label>Email</label><input name="email" class="form-control" required></div></div>
+      <button type="button" class="btn btn-primary w-100 mt-3" onclick="nextStep(2)">Next</button>
+    </div>
+    <div id="step2" class="d-none">
+      <h4 class="mb-3">🏠 Details</h4>
+      <div class="row g-3">
+        <div class="col-6"><label>Year Built</label><input name="year_built" class="form-control"></div>
+        <div class="col-6"><label>Sq Ft</label><input name="square_footage" class="form-control"></div>
+        <div class="col-6"><label>Beds</label><input name="bedrooms" class="form-control"></div>
+        <div class="col-6"><label>Baths</label><input name="bathrooms" class="form-control"></div>
+      </div>
+      <div class="d-flex gap-2 mt-4"><button type="button" class="btn btn-secondary w-50" onclick="nextStep(1)">Back</button><button type="button" class="btn btn-primary w-50" onclick="nextStep(3)">Next</button></div>
+    </div>
+    <div id="step3" class="d-none">
+      <h4 class="mb-3">✨ Final Touches</h4>
+      <div class="mb-3"><label class="fw-bold">💰 Asking Price (Optional)</label><input name="asking_price" class="form-control" placeholder="e.g. $250,000"></div>
+      <div class="mb-3"><label class="fw-bold">📸 Upload Photos (Optional)</label><input type="file" name="photos" class="form-control" multiple accept="image/*"></div>
+      <div class="mb-3"><label>Parking</label><select name="parking_type" class="form-select"><option>Garage</option><option>Driveway</option><option>Street</option></select></div>
+      <div class="d-flex gap-2 mt-4"><button type="button" class="btn btn-secondary w-50" onclick="nextStep(2)">Back</button><button type="submit" class="btn btn-success w-50">Submit</button></div>
+    </div>
+  </form>
 </div>
 <script>
 function nextStep(step) { [1,2,3].forEach(n => document.getElementById('step'+n).classList.add('d-none')); document.getElementById('step'+step).classList.remove('d-none'); document.getElementById('pBar').style.width = (step*33)+'%'; }

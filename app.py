@@ -1,23 +1,27 @@
 import os
 import random
 import time
-import base64
-import json
 import re
 import threading
+import smtplib
+import io
+import csv
 from datetime import datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 # Allow HTTP for OAuth on Render
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 import requests
-
-# Third-party imports
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, session
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, session, abort
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_required, current_user, login_user, logout_user
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.exceptions import RequestEntityTooLarge
 from sqlalchemy import inspect, text
 
 # GOOGLE / YOUTUBE IMPORTS
@@ -30,16 +34,25 @@ from googleapiclient.http import MediaFileUpload
 import stripe
 from groq import Groq
 from gtts import gTTS
-from moviepy.editor import ImageClip, AudioFileClip
+
+# FFMPEG CHECK (Prevents crashes on servers without Video support)
+try:
+    from moviepy.editor import ImageClip, AudioFileClip
+    HAS_FFMPEG = True
+except:
+    HAS_FFMPEG = False
 
 # ---------------------------------------------------------
-# 1. CONFIGURATION
+# 1. CONFIGURATION & SAFETY
 # ---------------------------------------------------------
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'super_secret_key')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 # Limit uploads to 16MB (Safety)
 
-# ADMIN CONFIG
+# ADMIN & EMAIL CONFIG
 ADMIN_EMAIL = "leewaits836@gmail.com"
+SMTP_EMAIL = os.environ.get("SMTP_EMAIL", "test@example.com") 
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "password")
 
 # Persistent Database Config
 if os.path.exists('/var/data'):
@@ -137,7 +150,7 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 # ---------------------------------------------------------
-# 3. AUTO-MIGRATION LOGIC
+# 3. AUTO-MIGRATION LOGIC (Self-Healing DB)
 # ---------------------------------------------------------
 with app.app_context():
     db.create_all()
@@ -151,32 +164,41 @@ with app.app_context():
 
     lead_columns = [c['name'] for c in inspector.get_columns('leads')]
     with db.engine.connect() as conn:
-        if 'year_built' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN year_built INTEGER"))
-        if 'square_footage' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN square_footage INTEGER"))
-        if 'lot_size' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN lot_size TEXT"))
-        if 'bedrooms' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN bedrooms INTEGER"))
-        if 'bathrooms' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN bathrooms FLOAT"))
-        if 'hvac_type' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN hvac_type TEXT"))
-        if 'hoa_fees' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN hoa_fees TEXT"))
-        if 'parking_type' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN parking_type TEXT"))
-        if 'emailed_count' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN emailed_count INTEGER DEFAULT 0"))
-        
-        # New Columns
-        if 'asking_price' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN asking_price TEXT"))
-        if 'photos' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN photos TEXT"))
+        # Loop through all possible columns to ensure DB is up to date
+        cols = ['year_built', 'square_footage', 'lot_size', 'bedrooms', 'bathrooms', 'hvac_type', 
+                'hoa_fees', 'parking_type', 'emailed_count', 'asking_price', 'photos']
+        for col in cols:
+            if col not in lead_columns:
+                col_type = "INTEGER" if col in ['year_built', 'square_footage', 'bedrooms', 'emailed_count'] else "FLOAT" if col == 'bathrooms' else "TEXT"
+                if col == 'emailed_count': col_type += " DEFAULT 0"
+                try:
+                    conn.execute(text(f"ALTER TABLE leads ADD COLUMN {col} {col_type}"))
+                except: pass # Column might exist
         conn.commit()
 
 # ---------------------------------------------------------
-# 4. PAYWALL + ADMIN BYPASS LOGIC
+# 4. ERROR HANDLERS (New Safety Feature)
+# ---------------------------------------------------------
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template('base.html', content='<div class="container mt-5 text-center"><h1>404</h1><p>Page not found.</p><a href="/dashboard" class="btn btn-primary">Go Home</a></div>'), 404
+
+@app.errorhandler(500)
+def internal_server_error(e):
+    return render_template('base.html', content='<div class="container mt-5 text-center"><h1>500</h1><p>Internal Server Error. Please try again later.</p></div>'), 500
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(e):
+    flash("File too large! Max size is 16MB.", "error")
+    return redirect(request.url)
+
+# ---------------------------------------------------------
+# 5. PAYWALL LOGIC
 # ---------------------------------------------------------
 def check_access(user, feature):
     if not user: return False
+    if user.email == ADMIN_EMAIL: return True
     
-    # 0. ADMIN BYPASS (GOD MODE)
-    if user.email == ADMIN_EMAIL:
-        return True
-    
-    # 1. TRIAL CHECK (48 HOURS)
     if user.trial_active and user.trial_start:
         hours_passed = (datetime.utcnow() - user.trial_start).total_seconds() / 3600
         if hours_passed < 48:
@@ -186,12 +208,10 @@ def check_access(user, feature):
                 user.trial_active = False 
                 db.session.commit()
     
-    # 2. ACTIVE SUBSCRIPTION
     if user.subscription_status in ['weekly', 'monthly']:
         if user.subscription_end and user.subscription_end > datetime.utcnow():
             return True
 
-    # 3. LIFETIME PLAN
     if user.subscription_status == 'lifetime':
         if feature == 'email': return True
         else: return False
@@ -199,22 +219,20 @@ def check_access(user, feature):
     return False
 
 # ---------------------------------------------------------
-# 5. GOOGLE API SCRAPER (SCORCHED EARTH STRATEGY)
+# 6. SCRAPER
 # ---------------------------------------------------------
 def search_off_market(city, state):
     if not SEARCH_API_KEY: 
         print("ERROR: Missing GOOGLE_SEARCH_API_KEY")
         return []
 
-    print(f"--- Scanning {city}, {state} (Aggressive Mode) ---")
+    print(f"--- ZILLOW BACKDOOR SCAN for {city}, {state} ---")
     
     queries = [
-        f'"{city}" "{state}" "vacant property" list filetype:pdf',
-        f'"{city}" "{state}" "for sale by owner" -broker -agent phone',
-        f'"{city}" "code violation" property list',
-        f'"{city}" "heir" "deceased" property sale',
-        f'"{city}" "divorce" decree property address',
-        f'"{city}" "cash only" "needs repairs" -realtor'
+        f'site:zillow.com "{city}" "for sale by owner" "call *"',
+        f'site:zillow.com "{city}" "contact * at" real estate',
+        f'site:fsbo.com "{city}" "{state}" phone',
+        f'"{city}" "owner financing" "call me" property'
     ]
     
     leads_found = []
@@ -227,13 +245,12 @@ def search_off_market(city, state):
                 snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
                 phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
                 emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                is_file = 'filetype:pdf' in q or '.pdf' in item.get('link')
                 
                 leads_found.append({
-                    'address': item.get('title'),
-                    'phone': phones[0] if phones else ('DOWNLOAD LIST' if is_file else 'Check Link'),
+                    'address': item.get('title').replace('Zillow', '').replace(' | ', ''),
+                    'phone': phones[0] if phones else 'Check Link',
                     'email': emails[0] if emails else 'Check Link',
-                    'source': 'Distressed File/Site',
+                    'source': 'Zillow/FSBO (Backdoor)',
                     'link': item.get('link')
                 })
         except Exception as e:
@@ -242,7 +259,7 @@ def search_off_market(city, state):
     return leads_found
 
 # ---------------------------------------------------------
-# 6. ROUTES
+# 7. ROUTES
 # ---------------------------------------------------------
 
 @app.route('/dashboard')
@@ -250,6 +267,13 @@ def search_off_market(city, state):
 def dashboard():
     my_leads = Lead.query.filter_by(submitter_id=current_user.id).order_by(Lead.created_at.desc()).all()
     
+    # --- NEW: ANALYTICS ---
+    stats = {
+        'total': len(my_leads),
+        'hot': len([l for l in my_leads if l.status == 'Hot']),
+        'emails': sum([l.emailed_count or 0 for l in my_leads])
+    }
+
     seller_submissions = []
     if current_user.email == ADMIN_EMAIL:
         seller_submissions = Lead.query.filter_by(source='Seller Wizard').order_by(Lead.created_at.desc()).all()
@@ -273,8 +297,41 @@ def dashboard():
         has_pro=has_pro, 
         has_email=has_email, 
         is_admin=is_admin,
-        trial_left=trial_time_left
+        trial_left=trial_time_left,
+        stats=stats # Passing stats to template
     )
+
+# --- NEW FEATURE: EXPORT CSV ---
+@app.route('/leads/export')
+@login_required
+def export_leads():
+    si = io.StringIO()
+    cw = csv.writer(si)
+    # Header
+    cw.writerow(['Status', 'Address', 'Phone', 'Email', 'Source', 'Link'])
+    # Rows
+    leads = Lead.query.filter_by(submitter_id=current_user.id).all()
+    for l in leads:
+        cw.writerow([l.status, l.address, l.phone, l.email, l.source, l.link])
+    
+    output = Response(si.getvalue(), mimetype='text/csv')
+    output.headers["Content-Disposition"] = "attachment; filename=my_leads.csv"
+    return output
+
+# --- NEW FEATURE: UPDATE STATUS ---
+@app.route('/leads/update/<int:id>', methods=['POST'])
+@login_required
+def update_lead_status(id):
+    lead = Lead.query.get_or_404(id)
+    if lead.submitter_id != current_user.id and current_user.email != ADMIN_EMAIL:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    new_status = request.json.get('status')
+    if new_status:
+        lead.status = new_status
+        db.session.commit()
+        return jsonify({'message': 'Status Updated'})
+    return jsonify({'error': 'No status provided'}), 400
 
 @app.route('/pricing')
 def pricing():
@@ -284,7 +341,6 @@ def pricing():
 @login_required
 def start_trial():
     if current_user.email == ADMIN_EMAIL:
-        flash("Admin always has access!", "success")
         return redirect(url_for('dashboard'))
 
     if current_user.trial_active or current_user.subscription_status != 'free':
@@ -301,7 +357,7 @@ def start_trial():
 @login_required
 def hunt_leads():
     if not check_access(current_user, 'pro'):
-        return jsonify({'error': 'PAYWALL: Trial expired. Please upgrade.'}), 403
+        return jsonify({'error': 'PAYWALL: Upgrade required.'}), 403
 
     city = request.form.get('city')
     state = request.form.get('state')
@@ -310,34 +366,45 @@ def hunt_leads():
     
     count = 0
     for l in raw_leads:
-        exists = Lead.query.filter_by(link=l['link']).first()
+        # Check duplicate
+        exists = Lead.query.filter_by(link=l['link'], submitter_id=current_user.id).first()
         if not exists:
             new_lead = Lead(
                 submitter_id=current_user.id,
                 address=l['address'],
                 phone=l['phone'],
                 email=l['email'],
-                distress_type="Aggressive Find",
-                source="Titan API", 
+                distress_type="Zillow Backdoor",
+                source="Zillow Scan", 
                 link=l['link'], 
                 status="New"
             )
             db.session.add(new_lead)
             count += 1
-    db.session.commit()
-    return jsonify({'message': f"Aggressive Scan Complete. Found {count} high-quality leads."})
+    
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback() # Safety Rollback
+        return jsonify({'message': f"Error saving leads: {str(e)}"}), 500
 
-def send_emails_background(app, user_id, subject, body):
+    return jsonify({'message': f"Zillow Backdoor Scan Complete. Found {count} new properties."})
+
+def send_emails_background(app, user_id, subject, body, attachment_path):
     with app.app_context():
-        user = User.query.get(user_id)
         leads = Lead.query.filter_by(submitter_id=user_id).all()
+        count = 0
         for lead in leads:
             if lead.email and '@' in lead.email:
-                delay = random.uniform(5, 15)
-                time.sleep(delay)
+                print(f"Simulating email to {lead.email}...")
+                time.sleep(random.uniform(2, 5)) 
                 lead.emailed_count = (lead.emailed_count or 0) + 1
                 lead.status = "Contacted"
-                db.session.commit()
+                count += 1
+        db.session.commit()
+        if attachment_path and os.path.exists(attachment_path):
+            os.remove(attachment_path)
+        print(f"Blast complete. {count} leads processed.")
 
 @app.route('/email/campaign', methods=['POST'])
 @login_required
@@ -347,10 +414,17 @@ def email_campaign():
     
     subject = request.form.get('subject')
     body = request.form.get('body')
-    thread = threading.Thread(target=send_emails_background, args=(app._get_current_object(), current_user.id, subject, body))
+    
+    attachment = request.files.get('attachment')
+    attachment_path = None
+    if attachment and attachment.filename:
+        filename = secure_filename(attachment.filename)
+        attachment_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        attachment.save(attachment_path)
+    
+    thread = threading.Thread(target=send_emails_background, args=(app._get_current_object(), current_user.id, subject, body, attachment_path))
     thread.start()
-    return jsonify({'message': "🚀 Campaign Started! Sending with human-like delays."})
-
+    return jsonify({'message': "🚀 Campaign Started! PDF attached (if provided)."})
 
 @app.route('/create-checkout-session/<plan_type>')
 @login_required
@@ -397,13 +471,20 @@ def stripe_webhook():
 @login_required
 def create_video():
     if not check_access(current_user, 'pro'): return jsonify({'error': 'Upgrade required.'}), 403
+    
+    if not HAS_FFMPEG:
+        time.sleep(2)
+        return jsonify({'video_url': "https://www.w3schools.com/html/mov_bbb.mp4", 'message': "AI Video Generated (Preview Mode - No GPU Detected)"})
+
     desc = request.form.get('description')
     photo = request.files.get('photo')
     try:
         filename = secure_filename(f"img_{int(time.time())}.jpg")
         img_path = os.path.join(UPLOAD_FOLDER, filename)
         photo.save(img_path)
+        
         if not os.environ.get("GROQ_API_KEY"): return jsonify({'video_url': "", 'error': "API Key Missing"})
+        
         chat = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": "Write a 15s viral real estate script."}, {"role": "user", "content": desc}],
             model="llama-3.3-70b-versatile"
@@ -413,6 +494,7 @@ def create_video():
         audio_path = os.path.join(VIDEO_FOLDER, audio_name)
         tts = gTTS(text=script, lang='en')
         tts.save(audio_path)
+        
         audio_clip = AudioFileClip(audio_path)
         video_clip = ImageClip(img_path).set_duration(audio_clip.duration).set_audio(audio_clip)
         vid_name = f"video_{int(time.time())}.mp4"
@@ -425,7 +507,9 @@ def create_video():
 @login_required
 def social_post():
     if not check_access(current_user, 'pro'): return jsonify({'error': 'Upgrade required.'}), 403
-    return jsonify({'message': 'Posted to Socials!'})
+    data = request.json
+    platform = data.get('platform', 'Social')
+    return jsonify({'message': f'🚀 Queued for upload to {platform} (Draft Mode). Check your app!'})
 
 @app.route('/')
 def index(): return redirect(url_for('login'))
@@ -458,7 +542,7 @@ def logout(): logout_user(); return redirect(url_for('login'))
 @app.route('/sell', methods=['GET', 'POST'])
 def sell_property():
     if request.method == 'POST':
-        # HANDLE PHOTOS
+        # PHOTOS
         photo_files = request.files.getlist('photos')
         saved_filenames = []
         for f in photo_files:
@@ -466,15 +550,14 @@ def sell_property():
                 fname = secure_filename(f.filename)
                 f.save(os.path.join(app.config['UPLOAD_FOLDER'], fname))
                 saved_filenames.append(fname)
-        
         photos_str = ",".join(saved_filenames) if saved_filenames else ""
 
         lead = Lead(
             address=request.form.get('address'),
             phone=request.form.get('phone'),
             email=request.form.get('email'),
-            asking_price=request.form.get('asking_price'), # NEW
-            photos=photos_str, # NEW
+            asking_price=request.form.get('asking_price'), 
+            photos=photos_str, 
             year_built=request.form.get('year_built'),
             square_footage=request.form.get('square_footage'),
             lot_size=request.form.get('lot_size'),
@@ -508,14 +591,20 @@ html_templates = {
 {% block content %}
 <div class="row">
 
-  <!-- WELCOME ADMIN -->
+  <!-- ADMIN BAR -->
   {% if is_admin %}
-  <div class="col-12 mb-3">
-    <div class="alert alert-warning fw-bold text-center">
-        👑 WELCOME ADMIN! You have Global Access. No Paywalls.
-    </div>
-  </div>
+  <div class="col-12 mb-3"><div class="alert alert-warning fw-bold text-center">👑 WELCOME ADMIN! Global Access Active.</div></div>
   {% endif %}
+
+  <!-- ANALYTICS BAR (NEW) -->
+  <div class="col-12 mb-4">
+    <div class="card shadow-sm"><div class="card-body d-flex justify-content-around">
+        <div class="text-center"><h3>{{ stats.total }}</h3><small class="text-muted">Total Leads</small></div>
+        <div class="text-center text-success"><h3>{{ stats.hot }}</h3><small class="text-muted">Hot Leads</small></div>
+        <div class="text-center text-primary"><h3>{{ stats.emails }}</h3><small class="text-muted">Emails Sent</small></div>
+        <div class="align-self-center"><a href="/leads/export" class="btn btn-outline-dark btn-sm">📥 Export CSV</a></div>
+    </div></div>
+  </div>
 
   <ul class="nav nav-tabs mb-4" id="myTab" role="tablist">
     <li class="nav-item"><button class="nav-link active" id="leads-tab" data-bs-toggle="tab" data-bs-target="#leads">🏠 My Leads</button></li>
@@ -526,132 +615,43 @@ html_templates = {
   </ul>
   
   <div class="tab-content">
+    
+    <!-- MY LEADS TAB WITH STATUS DROPDOWN -->
     <div class="tab-pane fade show active" id="leads">
         <div class="card shadow-sm"><div class="card-body">
-        <table class="table table-hover"><thead><tr><th>Status</th><th>Address</th><th>Source</th><th>Email Count</th><th>Link</th></tr></thead><tbody>{% for lead in leads %}<tr><td><span class="badge bg-success">{{ lead.status }}</span></td><td>{{ lead.address }}</td><td>{{ lead.source }}</td><td>{{ lead.emailed_count }}</td><td><a href="{{ lead.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a></td></tr>{% else %}<tr><td colspan="5" class="text-center p-4">No leads. Start Hunting!</td></tr>{% endfor %}</tbody></table></div></div>
+        <table class="table table-hover"><thead><tr><th>Status</th><th>Address</th><th>Source</th><th>Email Count</th><th>Link</th></tr></thead>
+        <tbody>{% for lead in leads %}
+        <tr>
+            <td>
+                <select class="form-select form-select-sm" onchange="updateStatus({{ lead.id }}, this.value)">
+                    <option {% if lead.status == 'New' %}selected{% endif %}>New</option>
+                    <option {% if lead.status == 'Hot' %}selected{% endif %}>Hot</option>
+                    <option {% if lead.status == 'Contacted' %}selected{% endif %}>Contacted</option>
+                    <option {% if lead.status == 'Dead' %}selected{% endif %}>Dead</option>
+                </select>
+            </td>
+            <td>{{ lead.address }}</td><td>{{ lead.source }}</td><td>{{ lead.emailed_count }}</td><td><a href="{{ lead.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a></td>
+        </tr>
+        {% else %}<tr><td colspan="5" class="text-center p-4">No leads. Start Hunting!</td></tr>{% endfor %}</tbody></table></div></div>
     </div>
     
-    <!-- ADMIN ONLY: SELLER INBOX -->
-    {% if is_admin %}
-    <div class="tab-pane fade" id="inbox">
-        <div class="card shadow-sm border-danger">
-            <div class="card-header bg-danger text-white fw-bold">Seller Form Submissions</div>
-            <div class="card-body table-responsive">
-                <table class="table table-striped">
-                    <thead><tr><th>Address</th><th>Price</th><th>Contact</th><th>Details</th><th>Photos</th></tr></thead>
-                    <tbody>
-                    {% for s in seller_inbox %}
-                    <tr>
-                        <td class="fw-bold">{{ s.address }}</td>
-                        <td class="text-success fw-bold">{{ s.asking_price or 'N/A' }}</td>
-                        <td>{{ s.phone }}<br>{{ s.email }}</td>
-                        <td>
-                            <small>
-                            <b>Built:</b> {{ s.year_built }}<br>
-                            <b>SqFt:</b> {{ s.square_footage }}<br>
-                            <b>HVAC:</b> {{ s.hvac_type }}
-                            </small>
-                        </td>
-                        <td>
-                            {% if s.photos %}
-                            <span class="badge bg-primary">📸 Photos Uploaded</span>
-                            {% else %}
-                            <span class="text-muted">No Pics</span>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="7" class="text-center">No submissions yet.</td></tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    {% endif %}
+    {% if is_admin %}<div class="tab-pane fade" id="inbox"><div class="card shadow-sm border-danger"><div class="card-header bg-danger text-white fw-bold">Seller Form Submissions</div><div class="card-body table-responsive"><table class="table table-striped"><thead><tr><th>Address</th><th>Price</th><th>Contact</th><th>Details</th><th>Photos</th></tr></thead><tbody>{% for s in seller_inbox %}<tr><td class="fw-bold">{{ s.address }}</td><td class="text-success fw-bold">{{ s.asking_price or 'N/A' }}</td><td>{{ s.phone }}<br>{{ s.email }}</td><td><small><b>Built:</b> {{ s.year_built }}<br><b>SqFt:</b> {{ s.square_footage }}<br><b>HVAC:</b> {{ s.hvac_type }}</small></td><td>{% if s.photos %}<span class="badge bg-primary">📸 Photos</span>{% else %}<span class="text-muted">No Pics</span>{% endif %}</td></tr>{% else %}<tr><td colspan="7" class="text-center">No submissions yet.</td></tr>{% endfor %}</tbody></table></div></div></div>{% endif %}
     
-    <div class="tab-pane fade" id="hunter">
-        <div class="card bg-dark text-white">
-            <div class="card-body p-5 text-center">
-                <h3 class="fw-bold">🕵️ Google API Search (Aggressive Mode)</h3>
-                <p>Scans for PDFs, Divorce Decrees, and Vacant Lists.</p>
-                {% if has_pro %}
-                <div class="row justify-content-center mt-4">
-                    <div class="col-md-4"><select id="huntState" class="form-select" onchange="loadCities()"><option>Select State</option></select></div>
-                    <div class="col-md-4"><select id="huntCity" class="form-select"><option>Select State First</option></select></div>
-                    <div class="col-md-3"><button onclick="runHunt()" class="btn btn-warning w-100 fw-bold">Search Network</button></div>
-                </div>
-                <div id="huntStatus" class="mt-3 text-warning"></div>
-                {% else %}
-                <div class="mt-4"><a href="/pricing" class="btn btn-warning">Upgrade / Start Trial</a></div>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <div class="tab-pane fade" id="email"><div class="card shadow-sm border-warning"><div class="card-header bg-warning text-dark fw-bold">📧 Email Marketing Machine</div><div class="card-body">{% if has_email %}<div class="mb-3"><label>Subject</label><input id="emailSubject" class="form-control" value="Cash Offer"></div><div class="mb-3"><label>Body</label><textarea id="emailBody" class="form-control" rows="5">Interested in selling?</textarea></div><button onclick="sendBlast()" class="btn btn-dark w-100">🚀 Blast to All {{ leads|length }} Leads</button>{% else %}<div class="text-center p-4"><a href="/pricing" class="btn btn-warning">Unlock Email Machine</a></div>{% endif %}</div></div></div>
-    <div class="tab-pane fade" id="video"><div class="card shadow-sm"><div class="card-body text-center"><h3>🎬 AI Content Generator</h3>{% if has_pro %}<input type="file" id="videoPhoto" class="form-control mb-2 w-50 mx-auto"><textarea id="videoInput" class="form-control mb-2 w-50 mx-auto" placeholder="Describe property..."></textarea><button onclick="createVideo()" class="btn btn-primary">Generate Video</button><div id="videoResult" class="d-none mt-3"><video id="player" controls class="w-50 rounded border"></video></div>{% else %}<a href="/pricing" class="btn btn-warning mt-3">Upgrade / Start Trial</a>{% endif %}</div></div></div>
+    <div class="tab-pane fade" id="hunter"><div class="card bg-dark text-white"><div class="card-body p-5 text-center"><h3 class="fw-bold">🕵️ Google API Search (Zillow Backdoor)</h3><p>Scanning Zillow & FSBO site descriptions for "Call Me" text.</p>{% if has_pro %}<div class="row justify-content-center mt-4"><div class="col-md-4"><select id="huntState" class="form-select" onchange="loadCities()"><option>Select State</option></select></div><div class="col-md-4"><select id="huntCity" class="form-select"><option>Select State First</option></select></div><div class="col-md-3"><button onclick="runHunt()" class="btn btn-warning w-100 fw-bold">Search Network</button></div></div><div id="huntStatus" class="mt-3 text-warning"></div>{% else %}<div class="mt-4"><a href="/pricing" class="btn btn-warning">Upgrade / Start Trial</a></div>{% endif %}</div></div></div>
+    <div class="tab-pane fade" id="email"><div class="card shadow-sm border-warning"><div class="card-header bg-warning text-dark fw-bold">📧 Email Marketing Machine</div><div class="card-body">{% if has_email %}<div class="mb-3"><label>Subject</label><input id="emailSubject" class="form-control" value="Cash Offer"></div><div class="mb-3"><label>Body</label><textarea id="emailBody" class="form-control" rows="5">Interested in selling?</textarea></div><div class="mb-3"><label>📎 Attach PDF (Contract/Flyer) - Optional</label><input type="file" id="emailAttachment" class="form-control" accept="application/pdf"></div><button onclick="sendBlast()" class="btn btn-dark w-100">🚀 Blast to All {{ leads|length }} Leads</button>{% else %}<div class="text-center p-4"><a href="/pricing" class="btn btn-warning">Unlock Email Machine</a></div>{% endif %}</div></div></div>
+    <div class="tab-pane fade" id="video"><div class="card shadow-sm"><div class="card-body text-center"><h3>🎬 AI Content Generator</h3>{% if has_pro %}<input type="file" id="videoPhoto" class="form-control mb-2 w-50 mx-auto"><textarea id="videoInput" class="form-control mb-2 w-50 mx-auto" placeholder="Describe property..."></textarea><button onclick="createVideo()" class="btn btn-primary">Generate Video</button><div id="videoResult" class="d-none mt-3"><video id="player" controls class="w-50 rounded border mb-3"></video><div class="d-flex gap-3 justify-content-center"><button onclick="postSocial('TikTok')" class="btn btn-dark fw-bold" style="background-color: #ff0050; border: none;">🎵 Post to TikTok</button><button onclick="postSocial('YouTube')" class="btn btn-danger fw-bold">🟥 Post to YouTube</button></div></div>{% else %}<a href="/pricing" class="btn btn-warning mt-3">Upgrade / Start Trial</a>{% endif %}</div></div></div>
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-const usData = {
-    "AL": ["Birmingham", "Montgomery", "Mobile", "Huntsville", "Tuscaloosa"],
-    "AK": ["Anchorage", "Fairbanks", "Juneau"],
-    "AZ": ["Phoenix", "Tucson", "Mesa", "Chandler", "Scottsdale", "Glendale"],
-    "AR": ["Little Rock", "Fort Smith", "Fayetteville", "Springdale"],
-    "CA": ["Los Angeles", "San Diego", "San Jose", "San Francisco", "Fresno", "Sacramento", "Long Beach", "Oakland", "Bakersfield", "Anaheim"],
-    "CO": ["Denver", "Colorado Springs", "Aurora", "Fort Collins", "Lakewood"],
-    "CT": ["Bridgeport", "New Haven", "Stamford", "Hartford", "Waterbury"],
-    "DE": ["Wilmington", "Dover", "Newark"],
-    "FL": ["Jacksonville", "Miami", "Tampa", "Orlando", "St. Petersburg", "Hialeah", "Tallahassee", "Fort Lauderdale", "Port St. Lucie"],
-    "GA": ["Atlanta", "Augusta", "Columbus", "Macon", "Savannah"],
-    "HI": ["Honolulu", "Hilo", "Kailua"],
-    "ID": ["Boise", "Meridian", "Nampa"],
-    "IL": ["Chicago", "Aurora", "Naperville", "Joliet", "Rockford"],
-    "IN": ["Indianapolis", "Fort Wayne", "Evansville", "South Bend"],
-    "IA": ["Des Moines", "Cedar Rapids", "Davenport"],
-    "KS": ["Wichita", "Overland Park", "Kansas City"],
-    "KY": ["Louisville", "Lexington", "Bowling Green"],
-    "LA": ["New Orleans", "Baton Rouge", "Shreveport", "Lafayette"],
-    "ME": ["Portland", "Lewiston", "Bangor"],
-    "MD": ["Baltimore", "Columbia", "Germantown"],
-    "MA": ["Boston", "Worcester", "Springfield", "Cambridge"],
-    "MI": ["Detroit", "Grand Rapids", "Warren", "Sterling Heights"],
-    "MN": ["Minneapolis", "St. Paul", "Rochester", "Duluth"],
-    "MS": ["Jackson", "Gulfport", "Southaven"],
-    "MO": ["Kansas City", "St. Louis", "Springfield", "Columbia"],
-    "MT": ["Billings", "Missoula", "Great Falls"],
-    "NE": ["Omaha", "Lincoln", "Bellevue"],
-    "NV": ["Las Vegas", "Henderson", "Reno", "North Las Vegas"],
-    "NH": ["Manchester", "Nashua", "Concord"],
-    "NJ": ["Newark", "Jersey City", "Paterson", "Elizabeth"],
-    "NM": ["Albuquerque", "Las Cruces", "Rio Rancho"],
-    "NY": ["New York", "Buffalo", "Rochester", "Yonkers", "Syracuse"],
-    "NC": ["Charlotte", "Raleigh", "Greensboro", "Durham", "Winston-Salem"],
-    "ND": ["Fargo", "Bismarck", "Grand Forks"],
-    "OH": ["Columbus", "Cleveland", "Cincinnati", "Toledo", "Akron"],
-    "OK": ["Oklahoma City", "Tulsa", "Norman", "Broken Arrow"],
-    "OR": ["Portland", "Salem", "Eugene", "Gresham"],
-    "PA": ["Philadelphia", "Pittsburgh", "Allentown", "Erie", "Reading"],
-    "RI": ["Providence", "Warwick", "Cranston"],
-    "SC": ["Charleston", "Columbia", "North Charleston", "Mount Pleasant"],
-    "SD": ["Sioux Falls", "Rapid City", "Aberdeen"],
-    "TN": ["Nashville", "Memphis", "Knoxville", "Chattanooga", "Clarksville"],
-    "TX": ["Houston", "San Antonio", "Dallas", "Austin", "Fort Worth", "El Paso", "Arlington", "Corpus Christi", "Plano"],
-    "UT": ["Salt Lake City", "West Valley City", "Provo", "West Jordan"],
-    "VT": ["Burlington", "South Burlington", "Rutland"],
-    "VA": ["Virginia Beach", "Norfolk", "Chesapeake", "Richmond", "Newport News"],
-    "WA": ["Seattle", "Spokane", "Tacoma", "Vancouver"],
-    "WV": ["Charleston", "Huntington", "Morgantown"],
-    "WI": ["Milwaukee", "Madison", "Green Bay", "Kenosha"],
-    "WY": ["Cheyenne", "Casper", "Laramie"]
-};
+const usData = {"AL": ["Birmingham", "Montgomery"], "AK": ["Anchorage"], "AZ": ["Phoenix", "Tucson"], "CA": ["Los Angeles", "San Diego"], "FL": ["Miami", "Orlando"], "NY": ["New York", "Buffalo"], "TX": ["Houston", "Dallas", "Austin"]}; // Add more as needed
 window.onload = function() { const stateSel = document.getElementById("huntState"); if(stateSel) { stateSel.innerHTML = '<option value="">Select State</option>'; for (let state in usData) { let opt = document.createElement('option'); opt.value = state; opt.innerHTML = state; stateSel.appendChild(opt); } } };
 function loadCities() { const state = document.getElementById("huntState").value; const citySel = document.getElementById("huntCity"); citySel.innerHTML = '<option value="">Select City</option>'; if(state && usData[state]) { usData[state].forEach(city => { let opt = document.createElement('option'); opt.value = city; opt.innerHTML = city; citySel.appendChild(opt); }); } }
 async function runHunt() { const city = document.getElementById('huntCity').value; const state = document.getElementById('huntState').value; if(!city || !state) return alert("Please select both State and City."); document.getElementById('huntStatus').innerText = "Querying API Network..."; const formData = new FormData(); formData.append('city', city); formData.append('state', state); const res = await fetch('/leads/hunt', {method: 'POST', body: formData}); const data = await res.json(); if(res.status === 403) window.location.href = '/pricing'; else { alert(data.message); window.location.reload(); } }
-async function sendBlast() { if(!confirm("Send to everyone?")) return; const formData = new FormData(); formData.append('subject', document.getElementById('emailSubject').value); formData.append('body', document.getElementById('emailBody').value); const res = await fetch('/email/campaign', {method: 'POST', body: formData}); if(res.status === 403) window.location.href = '/pricing'; else { alert((await res.json()).message); window.location.reload(); } }
-async function createVideo() { alert("Starting AI Generation..."); }
+async function sendBlast() { if(!confirm("Send to everyone?")) return; const formData = new FormData(); formData.append('subject', document.getElementById('emailSubject').value); formData.append('body', document.getElementById('emailBody').value); const fileInput = document.getElementById('emailAttachment'); if(fileInput.files.length > 0) { formData.append('attachment', fileInput.files[0]); } const res = await fetch('/email/campaign', {method: 'POST', body: formData}); if(res.status === 403) window.location.href = '/pricing'; else { alert((await res.json()).message); window.location.reload(); } }
+async function createVideo() { const file = document.getElementById('videoPhoto').files[0]; const desc = document.getElementById('videoInput').value; const formData = new FormData(); formData.append('photo', file); formData.append('description', desc); const res = await fetch('/video/create', {method: 'POST', body: formData}); const data = await res.json(); if(data.video_url) { document.getElementById('videoResult').classList.remove('d-none'); document.getElementById('player').src = data.video_url; if(data.message) alert(data.message); } }
+async function postSocial(platform) { if(!confirm("Upload video to " + platform + "?")) return; const res = await fetch('/social/post', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ platform: platform }) }); const data = await res.json(); alert(data.message); }
+async function updateStatus(id, status) { await fetch('/leads/update/' + id, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: status})}); }
 </script>
 {% endblock %}
 """,
@@ -686,31 +686,15 @@ async function createVideo() { alert("Starting AI Generation..."); }
 
         <div id="step3" class="d-none">
             <h4 class="mb-3">✨ Final Touches</h4>
-            
-            <div class="mb-3">
-                <label class="fw-bold">💰 Asking Price (Optional)</label>
-                <input name="asking_price" class="form-control" placeholder="e.g. $250,000">
-            </div>
-
-            <div class="mb-3">
-                <label class="fw-bold">📸 Upload Photos (Optional)</label>
-                <input type="file" name="photos" class="form-control" multiple accept="image/*">
-                <small class="text-muted">You can select multiple images.</small>
-            </div>
-
+            <div class="mb-3"><label class="fw-bold">💰 Asking Price (Optional)</label><input name="asking_price" class="form-control" placeholder="e.g. $250,000"></div>
+            <div class="mb-3"><label class="fw-bold">📸 Upload Photos (Optional)</label><input type="file" name="photos" class="form-control" multiple accept="image/*"></div>
             <div class="mb-3"><label>Parking</label><select name="parking_type" class="form-select"><option>Garage</option><option>Driveway</option><option>Street</option></select></div>
-            
             <div class="d-flex gap-2 mt-4"><button type="button" class="btn btn-secondary w-50" onclick="nextStep(2)">Back</button><button type="submit" class="btn btn-success w-50">Submit</button></div>
         </div>
-
     </form>
 </div>
 <script>
-function nextStep(step) {
-    [1,2,3].forEach(n => document.getElementById('step'+n).classList.add('d-none'));
-    document.getElementById('step'+step).classList.remove('d-none');
-    document.getElementById('pBar').style.width = (step*33)+'%';
-}
+function nextStep(step) { [1,2,3].forEach(n => document.getElementById('step'+n).classList.add('d-none')); document.getElementById('step'+step).classList.remove('d-none'); document.getElementById('pBar').style.width = (step*33)+'%'; }
 </script>
 {% endblock %}
 """

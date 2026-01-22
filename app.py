@@ -31,6 +31,15 @@ from groq import Groq
 from gtts import gTTS
 from moviepy.editor import ImageClip, AudioFileClip
 
+# SELENIUM & SCRAPING IMPORTS
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+
 # ---------------------------------------------------------
 # 1. CONFIGURATION
 # ---------------------------------------------------------
@@ -65,10 +74,6 @@ CREDS = {
     'meta': {'id': os.environ.get("META_CLIENT_ID"), 'secret': os.environ.get("META_CLIENT_SECRET")}
 }
 
-# SEARCH KEYS
-SEARCH_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
-SEARCH_CX = "17b704d9fe2114c12"
-
 # Folders
 UPLOAD_FOLDER = 'static/uploads'
 VIDEO_FOLDER = 'static/videos'
@@ -101,13 +106,25 @@ class Lead(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     submitter_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     
+    # Basic
     address = db.Column(db.String(255), nullable=False)
     phone = db.Column(db.String(50), nullable=True)
     email = db.Column(db.String(100), nullable=True)
+    
+    # Deep Property Details (Zillow Style)
+    year_built = db.Column(db.Integer, nullable=True)
+    square_footage = db.Column(db.Integer, nullable=True)
+    lot_size = db.Column(db.String(50), nullable=True)
+    bedrooms = db.Column(db.Integer, nullable=True)
+    bathrooms = db.Column(db.Float, nullable=True)
+    hvac_type = db.Column(db.String(100), nullable=True)
+    hoa_fees = db.Column(db.String(50), nullable=True)
+    parking_type = db.Column(db.String(100), nullable=True)
+    
     distress_type = db.Column(db.String(100)) 
     status = db.Column(db.String(50), default="New") 
-    source = db.Column(db.String(50), default="Manual") # WILL ALWAYS SAY 'TITAN INTELLIGENCE'
-    link = db.Column(db.String(500)) # Hidden from user
+    source = db.Column(db.String(50), default="Manual")
+    link = db.Column(db.String(500)) 
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -129,13 +146,25 @@ with app.app_context():
         if 'bb_min_price' not in user_columns: conn.execute(text("ALTER TABLE users ADD COLUMN bb_min_price INTEGER"))
         if 'bb_max_price' not in user_columns: conn.execute(text("ALTER TABLE users ADD COLUMN bb_max_price INTEGER"))
         conn.commit()
+    
     lead_columns = [c['name'] for c in inspector.get_columns('leads')]
     with db.engine.connect() as conn:
+        # Existing columns
         if 'email' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN email TEXT"))
         if 'distress_type' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN distress_type TEXT"))
         if 'link' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN link TEXT"))
         if 'source' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN source TEXT"))
         if 'status' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN status TEXT"))
+        
+        # New Zillow-Style Columns
+        if 'year_built' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN year_built INTEGER"))
+        if 'square_footage' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN square_footage INTEGER"))
+        if 'lot_size' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN lot_size TEXT"))
+        if 'bedrooms' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN bedrooms INTEGER"))
+        if 'bathrooms' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN bathrooms FLOAT"))
+        if 'hvac_type' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN hvac_type TEXT"))
+        if 'hoa_fees' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN hoa_fees TEXT"))
+        if 'parking_type' not in lead_columns: conn.execute(text("ALTER TABLE leads ADD COLUMN parking_type TEXT"))
         conn.commit()
 
 # ---------------------------------------------------------
@@ -165,48 +194,81 @@ def check_access(user, feature):
     return False # Default Block
 
 # ---------------------------------------------------------
-# 5. AGGRESSIVE DEAL HUNTER (IMPROVED PARSING)
+# 5. HIGH-LEVEL LEAD FINDER (SELENIUM / SCRAPING)
 # ---------------------------------------------------------
 def search_off_market(city, state):
-    if not SEARCH_API_KEY: return []
-
-    # Dorks optimized for contact extraction
-    queries = [
-        f'site:craigslist.org "{city}" "real estate" -broker phone',
-        f'"{city}" "{state}" "for sale by owner" contact',
-        f'"{city}" "probate" notice to creditors',
-        f'"{city}" "divorce" decree property address',
-        f'"{city}" "foreclosure" auction list pdf'
-    ]
+    """
+    Uses Selenium to scrape Craigslist/FSBO sources with anti-detection logic.
+    """
+    print(f"--- Starting Scrape for {city}, {state} ---")
     
+    # 1. Setup Chrome Options (Stealth Mode)
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # Run in background
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    
+    # User-Agent Rotation List
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+    ]
+    chrome_options.add_argument(f"user-agent={random.choice(user_agents)}")
+
+    driver = None
     leads_found = []
-    service = build("customsearch", "v1", developerKey=SEARCH_API_KEY)
 
-    for q in queries:
-        try:
-            res = service.cse().list(q=q, cx=SEARCH_CX, num=5).execute()
-            for item in res.get('items', []):
-                snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
+    try:
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        
+        # 2. Target: Craigslist Real Estate - Owner (FSBO)
+        # URL Structure: https://[city].craigslist.org/search/reo?query=[query]
+        # 'reo' = real estate by owner
+        base_url = f"https://{city.replace(' ', '').lower()}.craigslist.org/search/reo"
+        driver.get(base_url)
+        
+        # Random Sleep to mimic human
+        time.sleep(random.uniform(2, 5))
+        
+        # 3. Parse Results
+        # Wait for elements
+        wait = WebDriverWait(driver, 10)
+        listings = driver.find_elements(By.CSS_SELECTOR, "li.cl-static-search-result")
+        
+        # Limit to top 5 to avoid blocking
+        for item in listings[:5]:
+            try:
+                title = item.get_attribute("title")
+                link = item.find_element(By.TAG_NAME, "a").get_attribute("href")
                 
-                # Aggressive Phone Regex (Matches (555) 555-5555, 555-555-5555, 555.555.5555)
-                phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
-                
-                # Aggressive Email Regex
-                emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                
-                # Skip if no contact info found (Quality Control)
-                if not phones and not emails:
-                    continue
+                # Extract Price if available
+                try:
+                    price = item.find_element(By.CLASS_NAME, "price").text
+                except:
+                    price = "Unknown"
 
+                # We won't click into every link to get phone numbers to avoid IP Ban.
+                # Instead, we return the high-quality FSBO link.
                 leads_found.append({
-                    'address': item.get('title').split('|')[0].strip(),
-                    'phone': phones[0] if phones else 'Unknown',
-                    'email': emails[0] if emails else 'Unknown',
-                    'source': 'Titan Intelligence', # Hidden Source
-                    'link': item.get('link')
+                    'address': title if title else "Unlisted Address",
+                    'phone': "Click Link for Info", # Placeholder for scraping safety
+                    'email': "Click Link for Info",
+                    'source': 'Craigslist (FSBO)',
+                    'link': link
                 })
-        except Exception:
-            continue
+            except Exception as e:
+                continue
+                
+    except Exception as e:
+        print(f"Scraping Error: {str(e)}")
+        # Fallback to empty list so app doesn't crash
+        return []
+    finally:
+        if driver:
+            driver.quit()
+            
     return leads_found
 
 # ---------------------------------------------------------
@@ -231,13 +293,14 @@ def pricing():
 @app.route('/leads/hunt', methods=['POST'])
 @login_required
 def hunt_leads():
-    # STRICT PAYMENT WALL
+    # STRICT PAYMENT WALL CHECK
     if not check_access(current_user, 'pro'):
-        return jsonify({'error': 'Trial expired. Upgrade to unlock Deal Hunter.'}), 403
+        return jsonify({'error': 'ACCESS DENIED. Upgrade to Pro to unlock the Scraper.'}), 403
 
     city = request.form.get('city')
     state = request.form.get('state')
     
+    # USE NEW SELENIUM SCRAPER
     raw_leads = search_off_market(city, state)
     
     count = 0
@@ -249,7 +312,7 @@ def hunt_leads():
                 address=l['address'],
                 phone=l['phone'],
                 email=l['email'],
-                distress_type="Off-Market Distress",
+                distress_type="FSBO / Scraped",
                 source="Titan Intelligence", 
                 link=l['link'], 
                 status="New"
@@ -259,9 +322,9 @@ def hunt_leads():
     db.session.commit()
     
     if count == 0:
-        return jsonify({'message': 'Scan complete. No direct contact info found in this batch.'})
+        return jsonify({'message': 'Scan complete. No new leads found in this run.'})
     
-    return jsonify({'message': f"Success! {count} High-Quality Leads added to your list."})
+    return jsonify({'message': f"Success! {count} Off-Market properties found via Selenium."})
 
 # ---------------------------------------------------------
 # 7. PAYMENT CHECKOUT
@@ -384,22 +447,30 @@ def callback_google():
     return redirect(url_for('dashboard'))
 
 # ---------------------------------------------------------
-# 10. PUBLIC ROUTES (IMPROVED LOGIN UI)
+# 10. PUBLIC ROUTES (UPDATED SELLER FORM)
 # ---------------------------------------------------------
 @app.route('/sell', methods=['GET', 'POST'])
 def sell_property():
     if request.method == 'POST':
+        # CAPTURE DEEP DATA
         lead = Lead(
             address=request.form.get('address'),
             phone=request.form.get('phone'),
             email=request.form.get('email'),
-            distress_type=request.form.get('distress_type'),
-            source="Seller Form",
+            year_built=request.form.get('year_built'),
+            square_footage=request.form.get('square_footage'),
+            lot_size=request.form.get('lot_size'),
+            bedrooms=request.form.get('bedrooms'),
+            bathrooms=request.form.get('bathrooms'),
+            hvac_type=request.form.get('hvac_type'),
+            hoa_fees=request.form.get('hoa_fees'),
+            parking_type=request.form.get('parking_type'),
+            source="Seller Wizard",
             status="New"
         )
         db.session.add(lead)
         db.session.commit()
-        flash('Property received.', 'success')
+        flash('Property received! We are analyzing your home now.', 'success')
         return redirect(url_for('sell_property'))
     return render_template('sell.html')
 
@@ -428,194 +499,359 @@ def stripe_webhook():
     return jsonify(success=True)
 
 # ---------------------------------------------------------
-# 11. TEMPLATES (Pricing + Dashboard Logic)
+# 11. TEMPLATES (REWRITTEN LOGIN & WIZARD)
 # ---------------------------------------------------------
 html_templates = {
-    'pricing.html': """
+  'pricing.html': """
 {% extends "base.html" %}
 {% block content %}
 <div class="text-center mb-5">
-    <h1>Upgrade to Titan Pro</h1>
-    <p>Unlock the Deal Hunter, AI Video Factory, and Auto-Poster.</p>
+  <h1>Upgrade to Titan Pro</h1>
+  <p>Unlock the Deal Hunter, AI Video Factory, and Auto-Poster.</p>
 </div>
 <div class="row text-center">
-    <div class="col-md-4">
-        <div class="card shadow-sm">
-            <div class="card-header">Weekly Pro</div>
-            <div class="card-body">
-                <h2>$3<small>/wk</small></h2>
-                <a href="/create-checkout-session/weekly" class="btn btn-primary w-100">Start</a>
-            </div>
-        </div>
+  <div class="col-md-4">
+    <div class="card shadow-sm">
+      <div class="card-header">Weekly Pro</div>
+      <div class="card-body">
+        <h2>$3<small>/wk</small></h2>
+        <a href="/create-checkout-session/weekly" class="btn btn-primary w-100">Start</a>
+      </div>
     </div>
-    <div class="col-md-4">
-        <div class="card shadow border-primary">
-            <div class="card-header bg-primary text-white">Email Only (Lifetime)</div>
-            <div class="card-body">
-                <h2>$20<small> (One Time)</small></h2>
-                <p>Unlock Email Machine Forever.</p>
-                <a href="/create-checkout-session/lifetime" class="btn btn-dark w-100">Get Lifetime Access</a>
-            </div>
-        </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card shadow border-primary">
+      <div class="card-header bg-primary text-white">Email Only (Lifetime)</div>
+      <div class="card-body">
+        <h2>$20<small> (One Time)</small></h2>
+        <p>Unlock Email Machine Forever.</p>
+        <a href="/create-checkout-session/lifetime" class="btn btn-dark w-100">Get Lifetime Access</a>
+      </div>
     </div>
-    <div class="col-md-4">
-        <div class="card shadow-sm">
-            <div class="card-header">Monthly Pro</div>
-            <div class="card-body">
-                <h2>$50<small>/mo</small></h2>
-                <p>Full AI Suite + Deal Hunter</p>
-                <a href="/create-checkout-session/monthly" class="btn btn-primary w-100">Start</a>
-            </div>
-        </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card shadow-sm">
+      <div class="card-header">Monthly Pro</div>
+      <div class="card-body">
+        <h2>$50<small>/mo</small></h2>
+        <p>Full AI Suite + Deal Hunter</p>
+        <a href="/create-checkout-session/monthly" class="btn btn-primary w-100">Start</a>
+      </div>
     </div>
+  </div>
 </div>
 {% endblock %}
 """,
-    'dashboard.html': """
+  'dashboard.html': """
 {% extends "base.html" %}
 {% block content %}
 <div class="row">
-    <!-- LEAD HUNTER (GATED) -->
-    <div class="col-12 mb-4">
-        <div class="card border-0 shadow-sm">
-            <div class="card-body bg-dark text-white rounded">
-                <h4 class="fw-bold">🕵️ Deal Hunter (Titan Intelligence)</h4>
-                
-                {% if has_pro %}
-                <div class="row g-2 align-items-center mb-3">
-                    <div class="col-auto"><input type="text" id="huntCity" class="form-control" placeholder="City" required></div>
-                    <div class="col-auto"><input type="text" id="huntState" class="form-control" placeholder="State" required></div>
-                    <div class="col-auto"><button onclick="runHunt()" class="btn btn-warning fw-bold">🔎 Auto-Scan Web</button></div>
-                </div>
-                <div id="huntStatus" class="text-warning"></div>
-                {% else %}
-                <div class="text-center p-4">
-                    <h5>🔒 Locked Feature</h5>
-                    <p>Upgrade to scan 1,000+ off-market sources instantly.</p>
-                    <a href="/pricing" class="btn btn-warning fw-bold">Unlock Now</a>
-                </div>
-                {% endif %}
-            </div>
+  <!-- LEAD HUNTER (GATED) -->
+  <div class="col-12 mb-4">
+    <div class="card border-0 shadow-sm">
+      <div class="card-body bg-dark text-white rounded">
+        <h4 class="fw-bold">🕵️ Deal Hunter (Titan Intelligence)</h4>
+         
+        {% if has_pro %}
+        <div class="row g-2 align-items-center mb-3">
+          <div class="col-auto"><input type="text" id="huntCity" class="form-control" placeholder="City" required></div>
+          <div class="col-auto"><input type="text" id="huntState" class="form-control" placeholder="State" required></div>
+          <div class="col-auto"><button onclick="runHunt()" class="btn btn-warning fw-bold">🔎 Auto-Scan Web (Selenium)</button></div>
         </div>
+        <div id="huntStatus" class="text-warning"></div>
+        {% else %}
+        <div class="text-center p-4">
+          <h5>🔒 Locked Feature</h5>
+          <p>Upgrade to scan 1,000+ off-market sources instantly.</p>
+          <a href="/pricing" class="btn btn-warning fw-bold">Unlock Now</a>
+        </div>
+        {% endif %}
+      </div>
     </div>
+  </div>
 
-    <!-- LEADS TABLE (OBFUSCATED) -->
-    <div class="col-12 mb-4">
-        <div class="card shadow-sm">
-            <div class="card-header bg-white py-3">
-                <h5 class="mb-0 fw-bold text-dark">My Properties</h5>
-            </div>
-            <div class="table-responsive">
-                <table class="table table-hover align-middle mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Status</th>
-                            <th>Address</th>
-                            <th>Phone</th>
-                            <th>Source</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for lead in leads %}
-                        <tr>
-                            <td><span class="badge bg-success">{{ lead.status }}</span></td>
-                            <td class="fw-bold">{{ lead.address }}</td>
-                            <td>{{ lead.phone if lead.phone != 'Unknown' else '<span class="text-muted">--</span>'|safe }}</td>
-                            <td><span class="badge bg-secondary">Titan Intelligence</span></td>
-                            <td><button class="btn btn-sm btn-outline-primary">Details</button></td>
-                        </tr>
-                        {% else %}
-                        <tr><td colspan="5" class="text-center py-4 text-muted">No leads yet.</td></tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+  <!-- LEADS TABLE (OBFUSCATED) -->
+  <div class="col-12 mb-4">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-bold text-dark">My Properties</h5>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Status</th>
+              <th>Address</th>
+              <th>Phone</th>
+              <th>Source</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for lead in leads %}
+            <tr>
+              <td><span class="badge bg-success">{{ lead.status }}</span></td>
+              <td class="fw-bold">{{ lead.address }}</td>
+              <td>{{ lead.phone if lead.phone != 'Unknown' else '<span class="text-muted">--</span>'|safe }}</td>
+              <td><span class="badge bg-secondary">{{ lead.source }}</span></td>
+              <td><a href="{{ lead.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center py-4 text-muted">No leads yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
+  </div>
 
-    <!-- AI VIDEO (GATED) -->
-    <div class="col-lg-6 mb-4">
-        <div class="card shadow-sm h-100">
-            <div class="card-header bg-primary text-white">🎬 AI Video Publisher</div>
-            <div class="card-body">
-                {% if has_pro %}
-                <input type="file" id="videoPhoto" class="form-control mb-2">
-                <textarea id="videoInput" class="form-control mb-2" rows="2" placeholder="Describe property..."></textarea>
-                <button onclick="createVideo()" class="btn btn-primary w-100">Generate Video</button>
-                <div id="videoResult" class="d-none mt-3">
-                    <video id="player" controls width="100%" class="border rounded mb-2"></video>
-                    <input type="hidden" id="currentVideoPath">
-                    <button onclick="postToSocials('youtube')" class="btn btn-danger w-100">Post to YouTube</button>
-                </div>
-                {% else %}
-                <div class="text-center p-4">
-                    <h5>🔒 Locked</h5>
-                    <a href="/pricing" class="btn btn-outline-light text-dark border-dark">Upgrade</a>
-                </div>
-                {% endif %}
-            </div>
+  <!-- AI VIDEO (GATED) -->
+  <div class="col-lg-6 mb-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-primary text-white">🎬 AI Video Publisher</div>
+      <div class="card-body">
+        {% if has_pro %}
+        <input type="file" id="videoPhoto" class="form-control mb-2">
+        <textarea id="videoInput" class="form-control mb-2" rows="2" placeholder="Describe property..."></textarea>
+        <button onclick="createVideo()" class="btn btn-primary w-100">Generate Video</button>
+        <div id="videoResult" class="d-none mt-3">
+          <video id="player" controls width="100%" class="border rounded mb-2"></video>
+          <input type="hidden" id="currentVideoPath">
+          <button onclick="postToSocials('youtube')" class="btn btn-danger w-100">Post to YouTube</button>
         </div>
+        {% else %}
+        <div class="text-center p-4">
+          <h5>🔒 Locked</h5>
+          <a href="/pricing" class="btn btn-outline-light text-dark border-dark">Upgrade</a>
+        </div>
+        {% endif %}
+      </div>
     </div>
+  </div>
 </div>
 
 <script>
 async function runHunt() {
-    const city = document.getElementById('huntCity').value;
-    const state = document.getElementById('huntState').value;
-    const status = document.getElementById('huntStatus');
-    
-    if(!city || !state) return alert("Enter City/State");
-    status.innerText = "Scanning 1,000+ sources... This takes about 10 seconds...";
-    
-    const formData = new FormData();
-    formData.append('city', city);
-    formData.append('state', state);
-    
-    const res = await fetch('/leads/hunt', {method: 'POST', body: formData});
-    const data = await res.json();
-    
-    if(res.status === 403) window.location.href = '/pricing';
-    else {
-        alert(data.message);
-        window.location.reload();
-    }
+  const city = document.getElementById('huntCity').value;
+  const state = document.getElementById('huntState').value;
+  const status = document.getElementById('huntStatus');
+   
+  if(!city || !state) return alert("Enter City/State");
+  status.innerText = "Initializing Selenium Scraper... This may take 15-20 seconds...";
+   
+  const formData = new FormData();
+  formData.append('city', city);
+  formData.append('state', state);
+   
+  const res = await fetch('/leads/hunt', {method: 'POST', body: formData});
+  const data = await res.json();
+   
+  if(res.status === 403) window.location.href = '/pricing';
+  else {
+    alert(data.message);
+    window.location.reload();
+  }
 }
 
 async function createVideo() {
-    const file = document.getElementById('videoPhoto').files[0];
-    const desc = document.getElementById('videoInput').value;
-    const formData = new FormData();
-    formData.append('photo', file);
-    formData.append('description', desc);
-    const res = await fetch('/video/create', {method: 'POST', body: formData});
-    if(res.status === 403) window.location.href = '/pricing';
-    const data = await res.json();
-    if(data.video_url) {
-        document.getElementById('videoResult').classList.remove('d-none');
-        document.getElementById('player').src = data.video_url;
-        document.getElementById('currentVideoPath').value = data.video_path;
-    }
+  const file = document.getElementById('videoPhoto').files[0];
+  const desc = document.getElementById('videoInput').value;
+  const formData = new FormData();
+  formData.append('photo', file);
+  formData.append('description', desc);
+  const res = await fetch('/video/create', {method: 'POST', body: formData});
+  if(res.status === 403) window.location.href = '/pricing';
+  const data = await res.json();
+  if(data.video_url) {
+    document.getElementById('videoResult').classList.remove('d-none');
+    document.getElementById('player').src = data.video_url;
+    document.getElementById('currentVideoPath').value = data.video_path;
+  }
 }
 
 async function postToSocials(platform) {
-    const path = document.getElementById('currentVideoPath').value;
-    const res = await fetch('/social/post', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({platform: platform, video_path: path})
-    });
-    if(res.status === 403) window.location.href = '/pricing';
-    alert((await res.json()).message);
+  const path = document.getElementById('currentVideoPath').value;
+  const res = await fetch('/social/post', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({platform: platform, video_path: path})
+  });
+  if(res.status === 403) window.location.href = '/pricing';
+  alert((await res.json()).message);
 }
 </script>
 {% endblock %}
 """,
-    'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>TITAN</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head><body class="bg-light"><nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="/">TITAN ⚡</a><ul class="navbar-nav ms-auto gap-3"><li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div></body></html>""",
-    'login.html': """{% extends "base.html" %} {% block content %} <div class="row justify-content-center"><div class="col-md-5"><div class="text-center mb-4"><a href="/sell" class="btn btn-warning btn-lg fw-bold shadow w-100">💰 Sell My House For Cash</a></div><div class="card shadow-sm"><div class="card-body p-4"><h3 class="text-center mb-3">Investor Login</h3><form method="POST"><input name="email" class="form-control mb-3" placeholder="Email"><input type="password" name="password" class="form-control mb-3" placeholder="Password"><button class="btn btn-dark w-100">Login</button><div class="text-center mt-3"><a href="/register">Create Account</a></div></form></div></div></div></div> {% endblock %}""",
-    'register.html': """{% extends "base.html" %} {% block content %} <form method="POST" class="mt-5 mx-auto" style="max-width:300px"><h3>Register</h3><input name="email" class="form-control mb-2" placeholder="Email"><input type="password" name="password" class="form-control mb-2" placeholder="Password"><button class="btn btn-success w-100">Join</button></form> {% endblock %}""",
-    'sell.html': """{% extends "base.html" %} {% block content %} <div class="container mt-5"><h2>Sell Property</h2><form method="POST"><div class="mb-3"><label>Address</label><input name="address" class="form-control" required></div><div class="mb-3"><label>Phone</label><input name="phone" class="form-control" required></div><button class="btn btn-success w-100">Get Offer</button></form></div> {% endblock %}""",
-    'buy_box.html': """{% extends "base.html" %} {% block content %} <div class="container mt-5"><h2>Join Buyers List</h2><form method="POST"><div class="mb-3"><label>Locations</label><input name="locations" class="form-control"></div><button class="btn btn-primary">Submit</button></form></div> {% endblock %}"""
+  'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>TITAN</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><style>.split-bg { background-image: url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); background-size: cover; background-position: center; height: 100vh; }</style></head><body class="bg-light"><nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="/">TITAN ⚡</a><ul class="navbar-nav ms-auto gap-3"><li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div></body></html>""",
+  
+  # NEW LOGIN SCREEN (SPLIT DESIGN)
+  'login.html': """
+{% extends "base.html" %} 
+{% block content %}
+<div class="row shadow-lg rounded overflow-hidden" style="min-height: 80vh;">
+    <!-- LEFT SIDE: IMAGE -->
+    <div class="col-md-6 d-none d-md-block" style="background: url('https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80') no-repeat center center; background-size: cover;">
+        <div class="h-100 d-flex align-items-center justify-content-center" style="background: rgba(0,0,0,0.4);">
+            <div class="text-white text-center p-4">
+                <h2 class="fw-bold">Titan Intelligence</h2>
+                <p>The #1 Platform for Real Estate Investors & Sellers.</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- RIGHT SIDE: FORM -->
+    <div class="col-md-6 bg-white d-flex align-items-center">
+        <div class="p-5 w-100">
+            <h3 class="mb-4 fw-bold text-center">Welcome Back</h3>
+            
+            <form method="POST">
+                <div class="mb-3">
+                    <label class="form-label text-muted">Email Address</label>
+                    <input name="email" class="form-control form-control-lg" placeholder="name@example.com">
+                </div>
+                <div class="mb-4">
+                    <label class="form-label text-muted">Password</label>
+                    <input type="password" name="password" class="form-control form-control-lg" placeholder="••••••••">
+                </div>
+                <button class="btn btn-dark btn-lg w-100 mb-3">Login as Investor</button>
+            </form>
+            
+            <div class="text-center border-top pt-3">
+                <p class="text-muted mb-2">Looking to sell your home?</p>
+                <a href="/sell" class="btn btn-warning w-100 fw-bold">💰 I am a Seller (Get Cash Offer)</a>
+            </div>
+            
+            <div class="text-center mt-3">
+                <a href="/register" class="text-decoration-none">Create Investor Account</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+""",
+
+  'register.html': """{% extends "base.html" %} {% block content %} <form method="POST" class="mt-5 mx-auto" style="max-width:300px"><h3>Register</h3><input name="email" class="form-control mb-2" placeholder="Email"><input type="password" name="password" class="form-control mb-2" placeholder="Password"><button class="btn btn-success w-100">Join</button></form> {% endblock %}""",
+  
+  # NEW SELLER WIZARD (ZILLOW STYLE)
+  'sell.html': """
+{% extends "base.html" %} 
+{% block content %}
+<div class="container mt-4" style="max-width: 800px;">
+    <h2 class="text-center fw-bold mb-4">Get Your Cash Offer</h2>
+    
+    <!-- PROGRESS BAR -->
+    <div class="progress mb-4" style="height: 5px;">
+        <div class="progress-bar bg-success" id="pBar" role="progressbar" style="width: 33%;"></div>
+    </div>
+
+    <form method="POST" id="sellerForm" class="card shadow-sm p-4">
+        
+        <!-- STEP 1: CONTACT -->
+        <div id="step1">
+            <h4 class="mb-3">📍 Where is your home?</h4>
+            <div class="mb-3">
+                <label class="form-label">Property Address</label>
+                <input name="address" class="form-control form-control-lg" required placeholder="123 Main St">
+            </div>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">Phone Number</label>
+                    <input name="phone" class="form-control" required placeholder="(555) 555-5555">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">Email Address</label>
+                    <input name="email" type="email" class="form-control" required>
+                </div>
+            </div>
+            <button type="button" class="btn btn-primary w-100" onclick="nextStep(2)">Next: Property Details</button>
+        </div>
+
+        <!-- STEP 2: DETAILS -->
+        <div id="step2" class="d-none">
+            <h4 class="mb-3">🏠 Home Details</h4>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label>Year Built</label>
+                    <input type="number" name="year_built" class="form-control">
+                </div>
+                <div class="col-md-6">
+                    <label>Square Footage</label>
+                    <input type="number" name="square_footage" class="form-control">
+                </div>
+                <div class="col-md-4">
+                    <label>Bedrooms</label>
+                    <select name="bedrooms" class="form-select">
+                        <option>1</option><option>2</option><option>3</option><option>4</option><option>5+</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label>Bathrooms</label>
+                    <select name="bathrooms" class="form-select">
+                        <option>1</option><option>1.5</option><option>2</option><option>2.5</option><option>3+</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label>Lot Size (Acres)</label>
+                    <input name="lot_size" class="form-control">
+                </div>
+                <div class="col-12">
+                    <label>HVAC / Heating</label>
+                    <input name="hvac_type" class="form-control" placeholder="e.g. Central Air, Force Air">
+                </div>
+            </div>
+            <div class="d-flex gap-2 mt-4">
+                <button type="button" class="btn btn-secondary w-50" onclick="nextStep(1)">Back</button>
+                <button type="button" class="btn btn-primary w-50" onclick="nextStep(3)">Next: Features</button>
+            </div>
+        </div>
+
+        <!-- STEP 3: FINAL -->
+        <div id="step3" class="d-none">
+            <h4 class="mb-3">✨ Final Touches</h4>
+            <div class="mb-3">
+                <label>Parking / Garage</label>
+                <select name="parking_type" class="form-select">
+                    <option>Garage (Attached)</option>
+                    <option>Garage (Detached)</option>
+                    <option>Street Parking</option>
+                    <option>Driveway</option>
+                </select>
+            </div>
+            <div class="mb-3">
+                <label>HOA Fees (Monthly)</label>
+                <input name="hoa_fees" class="form-control" placeholder="$0">
+            </div>
+            
+            <div class="alert alert-info">
+                📸 You can upload photos after submitting this form.
+            </div>
+
+            <div class="d-flex gap-2 mt-4">
+                <button type="button" class="btn btn-secondary w-50" onclick="nextStep(2)">Back</button>
+                <button type="submit" class="btn btn-success w-50 fw-bold">Submit for Cash Offer</button>
+            </div>
+        </div>
+
+    </form>
+</div>
+
+<script>
+function nextStep(step) {
+    document.getElementById('step1').classList.add('d-none');
+    document.getElementById('step2').classList.add('d-none');
+    document.getElementById('step3').classList.add('d-none');
+    
+    document.getElementById('step' + step).classList.remove('d-none');
+    
+    let percent = '33%';
+    if(step === 2) percent = '66%';
+    if(step === 3) percent = '100%';
+    document.getElementById('pBar').style.width = percent;
+}
+</script>
+{% endblock %}
+""",
+  'buy_box.html': """{% extends "base.html" %} {% block content %} <div class="container mt-5"><h2>Join Buyers List</h2><form method="POST"><div class="mb-3"><label>Locations</label><input name="locations" class="form-control"></div><button class="btn btn-primary">Submit</button></form></div> {% endblock %}"""
 }
 
 if not os.path.exists('templates'): os.makedirs('templates')

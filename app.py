@@ -149,11 +149,13 @@ def is_premium(user):
     if user.subscription_status in ['weekly', 'monthly'] and user.subscription_end:
         if user.subscription_end > datetime.utcnow():
             return True
+            
     # Trial check (24 Hours)
-    if (datetime.utcnow() - user.created_at).total_hours() < 24:
+    # FIX: Use total_seconds() / 3600
+    if (datetime.utcnow() - user.created_at).total_seconds() / 3600 < 24:
         return True
+        
     return False
-
 # ---------------------------------------------------------
 # 5. BLACK BOX DEAL HUNTER (OBFUSCATED)
 # ---------------------------------------------------------

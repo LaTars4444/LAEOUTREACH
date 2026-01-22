@@ -3,7 +3,7 @@ import random
 import time
 import base64
 import json
-import re # Added for Phone/Email extraction
+import re
 # Allow HTTP for OAuth on Render
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -59,9 +59,9 @@ CREDS = {
     'meta': {'id': os.environ.get("META_CLIENT_ID"), 'secret': os.environ.get("META_CLIENT_SECRET")}
 }
 
-# SEARCH KEYS
+# SEARCH KEYS (UPDATED WITH YOUR NEW 1000-SITE ENGINE)
 SEARCH_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
-SEARCH_CX = os.environ.get("GOOGLE_SEARCH_CX")
+SEARCH_CX = "17b704d9fe2114c12" # <--- YOUR SPECIFIC ENGINE ID
 
 # Folders
 UPLOAD_FOLDER = 'static/uploads'
@@ -87,11 +87,6 @@ class User(UserMixin, db.Model):
     subscription_status = db.Column(db.String(50), default='free') 
     subscription_end = db.Column(db.DateTime, nullable=True)
 
-    # Buy Box (Personal)
-    bb_locations = db.Column(db.String(255))
-    bb_min_price = db.Column(db.Integer)
-    bb_max_price = db.Column(db.Integer)
-
 class Lead(db.Model):
     __tablename__ = 'leads'
     id = db.Column(db.Integer, primary_key=True)
@@ -103,10 +98,9 @@ class Lead(db.Model):
     
     # Detailed Distress Info
     distress_type = db.Column(db.String(100)) 
-    mortgage_status = db.Column(db.String(100))
-    asking_price = db.Column(db.Integer)
-    status = db.Column(db.String(50), default="New") # New, Contacted, Dead, Deal
-    source = db.Column(db.String(50), default="Manual") # Manual, Hunted
+    status = db.Column(db.String(50), default="New") 
+    source = db.Column(db.String(50), default="Manual")
+    link = db.Column(db.String(500)) # Link to the source website
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -121,15 +115,15 @@ with app.app_context():
 # 3. DEAL HUNTER LOGIC (OSINT AGGREGATOR)
 # ---------------------------------------------------------
 def search_off_market(city, state):
-    if not SEARCH_API_KEY or not SEARCH_CX:
-        return []
+    if not SEARCH_API_KEY: return []
 
-    # Google Dorks for High-Motivation Sellers
+    # Dorks optimized for your 1000-site Custom Engine
     queries = [
-        f'site:craigslist.org "{city}" "for sale by owner" "fixer upper" -agent',
-        f'site:zillow.com "{city}" "fsbo" "price cut"',
-        f'"{city}" "{state}" "probate" "legal notice" real estate',
-        f'"{city}" "code violation" property list filetype:pdf'
+        f'"{city}" "{state}" motivated seller',
+        f'"{city}" "{state}" probate notice',
+        f'"{city}" "{state}" divorce decree property',
+        f'"{city}" "{state}" tax sale list',
+        f'"{city}" "{state}" foreclosure auction'
     ]
     
     leads_found = []
@@ -137,22 +131,20 @@ def search_off_market(city, state):
 
     for q in queries:
         try:
-            res = service.cse().list(q=q, cx=SEARCH_CX, num=5).execute()
+            # USES YOUR SPECIFIC CX ID (17b704d9fe2114c12)
+            res = service.cse().list(q=q, cx=SEARCH_CX, num=3).execute()
             for item in res.get('items', []):
                 snippet = item.get('snippet', '') + " " + item.get('title', '')
                 
-                # Regex Extraction for Contact Info
+                # Regex Extraction
                 phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
                 emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
                 
-                # Heuristic for Address
-                address = item.get('title').split('|')[0].split('-')[0].strip()
-
                 leads_found.append({
-                    'address': address,
+                    'address': item.get('title'), # Heuristic
                     'phone': phones[0] if phones else 'Unknown',
                     'email': emails[0] if emails else 'Unknown',
-                    'source': 'Google OSINT',
+                    'source': item.get('displayLink'),
                     'link': item.get('link')
                 })
         except Exception as e:
@@ -168,7 +160,6 @@ def search_off_market(city, state):
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    # Fetch user's leads for the "DealMachine" list
     my_leads = Lead.query.filter_by(submitter_id=current_user.id).order_by(Lead.created_at.desc()).all()
     return render_template('dashboard.html', user=current_user, leads=my_leads)
 
@@ -178,14 +169,11 @@ def hunt_leads():
     city = request.form.get('city')
     state = request.form.get('state')
     
-    # 1. Run OSINT Search
     raw_leads = search_off_market(city, state)
     
-    # 2. Save to Database
     count = 0
     for l in raw_leads:
-        # Check duplicate
-        exists = Lead.query.filter_by(address=l['address']).first()
+        exists = Lead.query.filter_by(link=l['link']).first()
         if not exists:
             new_lead = Lead(
                 submitter_id=current_user.id,
@@ -193,7 +181,8 @@ def hunt_leads():
                 phone=l['phone'],
                 email=l['email'],
                 distress_type="OSINT Found",
-                source="Hunted",
+                source=l['source'],
+                link=l['link'],
                 status="New"
             )
             db.session.add(new_lead)
@@ -204,7 +193,7 @@ def hunt_leads():
     return redirect(url_for('dashboard'))
 
 # ---------------------------------------------------------
-# 5. SOCIAL & VIDEO ROUTES (Existing)
+# 5. SOCIAL & VIDEO ROUTES
 # ---------------------------------------------------------
 @app.route('/auth/google')
 @login_required
@@ -298,9 +287,6 @@ def sell_property():
             phone=request.form.get('phone'),
             email=request.form.get('email'),
             distress_type=request.form.get('distress_type'),
-            mortgage_status=request.form.get('mortgage_status'),
-            asking_price=request.form.get('asking_price'),
-            source="Web Form",
             status="New"
         )
         db.session.add(lead)
@@ -330,7 +316,6 @@ html_templates = {
     <style>
         body { font-family: 'Segoe UI', sans-serif; background-color: #f4f6f9; }
         .table-hover tbody tr:hover { background-color: #f1f1f1; cursor: pointer; }
-        .badge-new { background-color: #28a745; }
     </style>
 </head>
 <body class="bg-light">
@@ -371,13 +356,21 @@ html_templates = {
     <div class="col-12 mb-4">
         <div class="card border-0 shadow-sm">
             <div class="card-body bg-dark text-white rounded">
-                <h4 class="fw-bold">🕵️ Lead Scraper (DealMachine Style)</h4>
-                <form action="/leads/hunt" method="POST" class="row g-2 align-items-center">
+                <h4 class="fw-bold">🕵️ Deal Hunter (1,000+ Sources)</h4>
+                
+                <!-- AUTOMATED HUNTER -->
+                <form action="/leads/hunt" method="POST" class="row g-2 align-items-center mb-3">
                     <div class="col-auto"><input type="text" name="city" class="form-control" placeholder="City" required></div>
                     <div class="col-auto"><input type="text" name="state" class="form-control" placeholder="State" required></div>
-                    <div class="col-auto"><button type="submit" class="btn btn-warning fw-bold">🔎 Scan Web for Leads</button></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-warning fw-bold">🔎 Auto-Scan Web</button></div>
                 </form>
-                <small class="text-white-50">Scrapes Craigslist, Zillow FSBO, and Probate Notices for Owners.</small>
+
+                <!-- MANUAL GOOGLE SEARCH BOX (YOUR CODE) -->
+                <div class="mt-3 bg-white p-2 rounded">
+                    <p class="text-dark small mb-1 fw-bold">Or Search Manually (Deep Dive):</p>
+                    <script async src="https://cse.google.com/cse.js?cx=17b704d9fe2114c12"></script>
+                    <div class="gcse-search"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -397,7 +390,7 @@ html_templates = {
                             <th>Phone</th>
                             <th>Email</th>
                             <th>Source</th>
-                            <th>Action</th>
+                            <th>Link</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -408,11 +401,11 @@ html_templates = {
                             <td>{{ lead.phone if lead.phone != 'Unknown' else '<span class="text-muted">--</span>'|safe }}</td>
                             <td>{{ lead.email if lead.email != 'Unknown' else '<span class="text-muted">--</span>'|safe }}</td>
                             <td><span class="badge bg-secondary">{{ lead.source }}</span></td>
-                            <td><button class="btn btn-sm btn-outline-primary">View</button></td>
+                            <td><a href="{{ lead.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a></td>
                         </tr>
                         {% else %}
                         <tr>
-                            <td colspan="6" class="text-center py-4 text-muted">No leads found yet. Use the Hunter above!</td>
+                            <td colspan="6" class="text-center py-4 text-muted">No leads yet. Use the Hunter above!</td>
                         </tr>
                         {% endfor %}
                     </tbody>

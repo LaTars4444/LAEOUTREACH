@@ -41,20 +41,18 @@ except:
     HAS_FFMPEG = False
 
 # ---------------------------------------------------------
-# 1. THE "NUCLEAR" KEYWORD BANK
+# 1. THE KEYWORD BANK (High Intent Only)
 # ---------------------------------------------------------
 KEYWORD_BANK = [
     "must sell", "motivated seller", "cash only", "relocating", "divorce", "probate", 
     "death in family", "job transfer", "liquidate", "needs cash", "moving out of state", 
     "urgent", "pre-foreclosure", "behind on payments", "notice of default",
-    "fixer upper", "needs work", "tlc", "handyman special", "as is", "foundation issues", 
-    "fire damage", "water damage", "mold", "hoarder", "vacant", "abandoned", "boarded up", 
+    "fixer upper", "needs work", "tlc", "handyman special", "as is", "fire damage", 
+    "water damage", "mold", "hoarder", "vacant", "abandoned", "boarded up", 
     "gutted", "shell", "contractor special", "investment property",
-    "cash buyer", "investor special", "below market value", "priced to sell", "price reduced", 
     "creative financing", "owner financing", "seller financing", "lease option", "rent to own", 
     "tax lien", "tax deed", "bankruptcy",
-    "call owner", "text owner", "fsbo", "for sale by owner", "no agents", "no brokers", 
-    "call me", "text me", "contact me", "private seller"
+    "call owner", "text owner", "fsbo", "for sale by owner", "no agents", "private seller"
 ]
 
 # ---------------------------------------------------------
@@ -149,14 +147,15 @@ with app.app_context():
     db.create_all()
 
 # ---------------------------------------------------------
-# 4. BACKGROUND SCRAPER (HIGH VOLUME)
+# 4. BACKGROUND SCRAPER (HIGH VOLUME + CONTACT INFO CHECK)
 # ---------------------------------------------------------
-def background_scraper_task(app, user_id, city, state):
+def background_scraper_task(app_instance, user_id, city, state):
     """
-    Runs in a background thread to prevent timeout.
-    Scrapes multiple pages (Pagination) to reach higher volume.
+    1. Runs in background.
+    2. Uses Pagination (Start=1, 11, 21...) to dig deep.
+    3. ONLY saves if Phone or Email is found.
     """
-    with app.app_context():
+    with app_instance.app_context():
         print(f"--- BACKGROUND SCRAPER STARTED FOR {city} ---")
         
         if not SEARCH_API_KEY or not SEARCH_CX:
@@ -169,46 +168,47 @@ def background_scraper_task(app, user_id, city, state):
             print(f"API Connect Error: {e}")
             return
 
-        target_sites = ["zillow.com", "fsbo.com", "craigslist.org", "facebook.com"]
-        # Randomize keywords to avoid patterns
-        selected_keywords = random.sample(KEYWORD_BANK, 5)
+        # Prioritize sites that actually show numbers
+        target_sites = ["craigslist.org", "fsbo.com", "facebook.com", "zillow.com"]
+        
+        # Select 8 keywords to maximize reach without hitting quota immediately
+        selected_keywords = random.sample(KEYWORD_BANK, 8)
         
         total_leads_added = 0
+        consecutive_errors = 0
         
-        # Loop through sites and keywords
         for site in target_sites:
             for keyword in selected_keywords:
-                # PAGINATION LOOP: Get results 1-10, 11-20, 21-30...
-                # We limit to 3 pages per query to manage API quota (3 * 5 * 4 = 60 queries max)
-                for start_index in [1, 11, 21]: 
+                # PAGINATION: Go up to 4 pages deep (40 results) per keyword
+                for start_index in [1, 11, 21, 31]: 
                     try:
                         q = f'site:{site} "{city}" "{keyword}"'
                         
-                        # Execute Search with Pagination
+                        # API Call
                         res = service.cse().list(q=q, cx=SEARCH_CX, num=10, start=start_index).execute()
                         
                         if 'items' not in res: 
-                            break # Stop paging if no results
+                            break # No more results for this keyword
 
                         for item in res.get('items', []):
                             title = item.get('title', 'No Title')
                             snippet = (item.get('snippet', '') + " " + title).lower()
                             link = item.get('link', '#')
 
+                            # Regex to find contact info
                             phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
                             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                            keyword_match = any(k in snippet for k in KEYWORD_BANK)
                             
-                            # Only add if we found something useful
-                            if phones or emails or keyword_match:
-                                # Check duplicate by link
+                            # CRITICAL: Only save if we found CONTACT INFO
+                            if phones or emails:
+                                # Check duplicate
                                 exists = Lead.query.filter_by(link=link, submitter_id=user_id).first()
                                 if not exists:
                                     new_lead = Lead(
                                         submitter_id=user_id,
                                         address=title[:100],
-                                        phone=phones[0] if phones else 'Check Link',
-                                        email=emails[0] if emails else 'Check Link',
+                                        phone=phones[0] if phones else None,
+                                        email=emails[0] if emails else None,
                                         source=f"{site} ({keyword})",
                                         link=link,
                                         status="New"
@@ -216,47 +216,55 @@ def background_scraper_task(app, user_id, city, state):
                                     db.session.add(new_lead)
                                     total_leads_added += 1
                         
-                        # Commit every page so we don't lose data if it crashes
                         db.session.commit()
-                        time.sleep(0.5) # Slight pause to be nice to API
+                        consecutive_errors = 0
+                        time.sleep(0.5) # Be nice to API
 
                     except HttpError as e:
                         if e.resp.status == 403:
-                            print("CRITICAL: API 403 Error. Check API Enablement/Billing.")
+                            print("CRITICAL: API 403. Quota Exceeded or API Not Enabled.")
                             return
                         print(f"HttpError: {e}")
+                        consecutive_errors += 1
+                        if consecutive_errors > 5: return # Stop if too many errors
                         break 
                     except Exception as e:
                         print(f"Generic Error: {e}")
                         continue
 
-        print(f"--- SCRAPER FINISHED. Added {total_leads_added} leads. ---")
+        print(f"--- SCRAPER FINISHED. Added {total_leads_added} ACTIONABLE leads. ---")
 
 # ---------------------------------------------------------
-# 5. EMAIL ENGINE
+# 5. BULK EMAIL ENGINE (BACKGROUND)
 # ---------------------------------------------------------
-def send_email_sync(app, user_id, subject, body, attachment_path):
-    with app.app_context():
+def background_email_task(app_instance, user_id, subject, body, attachment_path):
+    with app_instance.app_context():
         user = User.query.get(user_id)
         if not user.smtp_email or not user.smtp_password:
-            return "Settings Missing"
+            print("Email Task: Credentials missing.")
+            return
 
+        # Get all leads that haven't been emailed too much, and have an email address
         leads = Lead.query.filter_by(submitter_id=user_id).all()
-        count = 0
+        valid_leads = [l for l in leads if l.email and '@' in l.email]
+        
+        print(f"--- STARTING EMAIL BLAST TO {len(valid_leads)} LEADS ---")
+        
         try:
             server = smtplib.SMTP("smtp.gmail.com", 587)
             server.starttls()
             server.login(user.smtp_email, user.smtp_password)
             
-            for lead in leads:
-                if lead.email and '@' in lead.email and lead.email != "Check Link":
+            count = 0
+            for lead in valid_leads:
+                try:
                     msg = MIMEMultipart()
                     msg['From'] = user.smtp_email
                     msg['To'] = lead.email
                     msg['Subject'] = subject
                     msg.attach(MIMEText(body, 'plain'))
                     
-                    if attachment_path:
+                    if attachment_path and os.path.exists(attachment_path):
                         with open(attachment_path, "rb") as f:
                             part = MIMEBase('application', 'octet-stream')
                             part.set_payload(f.read())
@@ -265,20 +273,29 @@ def send_email_sync(app, user_id, subject, body, attachment_path):
                         msg.attach(part)
                     
                     server.send_message(msg)
+                    
                     lead.emailed_count = (lead.emailed_count or 0) + 1
-                    count += 1
+                    lead.status = "Contacted"
                     db.session.commit()
+                    count += 1
+                    
+                    # ANTI-SPAM DELAY (Crucial for Bulk)
+                    time.sleep(random.uniform(3, 8))
+                    
+                except Exception as e:
+                    print(f"Failed to email {lead.email}: {e}")
             
             server.quit()
+            print(f"--- EMAIL BLAST COMPLETE. Sent {count} emails. ---")
+            
         except Exception as e:
-            return f"Error: {str(e)}"
+            print(f"SMTP Critical Error: {e}")
 
         if attachment_path and os.path.exists(attachment_path):
             os.remove(attachment_path)
-        return f"Sent {count} emails."
 
 # ---------------------------------------------------------
-# 6. ROUTES & ACCESS CONTROL
+# 6. ROUTES
 # ---------------------------------------------------------
 def check_access(user, feature):
     if not user: return False
@@ -331,12 +348,11 @@ def hunt_leads():
     city = request.form.get('city')
     state = request.form.get('state')
     
-    # LAUNCH BACKGROUND THREAD
-    # This prevents the server from timing out while scraping
-    thread = threading.Thread(target=background_scraper_task, args=(app._get_current_object(), current_user.id, city, state))
+    # LAUNCH BACKGROUND SCRAPER
+    thread = threading.Thread(target=background_scraper_task, args=(app, current_user.id, city, state))
     thread.start()
     
-    return jsonify({'message': f"🚀 Vicious Scan Started for {city}! Running in background (takes ~2 mins). Refresh page soon."})
+    return jsonify({'message': f"🚀 Scanning deep web for {city}. This runs in the background. Check back in 2-3 minutes for results with phone numbers."})
 
 @app.route('/email/campaign', methods=['POST'])
 @login_required
@@ -354,9 +370,11 @@ def email_campaign():
         attachment_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         attachment.save(attachment_path)
     
-    result = send_email_sync(app._get_current_object(), current_user.id, subject, body, attachment_path)
-    if "Error" in result: return jsonify({'error': result}), 500
-    return jsonify({'message': result})
+    # LAUNCH BACKGROUND EMAILER
+    thread = threading.Thread(target=background_email_task, args=(app, current_user.id, subject, body, attachment_path))
+    thread.start()
+    
+    return jsonify({'message': "🚀 Bulk Email Blast Started! It will run in the background."})
 
 @app.route('/leads/update/<int:id>', methods=['POST'])
 @login_required
@@ -593,7 +611,7 @@ function loadCities() { const state = document.getElementById("huntState").value
 async function runHunt() { 
     const city = document.getElementById('huntCity').value; const state = document.getElementById('huntState').value; 
     if(!city || !state) return alert("Please select both State and City."); 
-    document.getElementById('huntStatus').innerText = "Running Vicious Scan (Background Mode)... This will take 2-3 mins."; 
+    document.getElementById('huntStatus').innerText = "Scanning Zillow, Redfin, FSBO with Keywords..."; 
     const formData = new FormData(); formData.append('city', city); formData.append('state', state); 
     
     try {
@@ -601,7 +619,7 @@ async function runHunt() {
         const data = await res.json(); 
         if(res.status === 403) window.location.href = '/pricing'; 
         else if (res.status === 500) alert(data.error);
-        else { alert(data.message); } 
+        else { alert(data.message); window.location.reload(); } 
     } catch (e) { alert("Network error. Check logs."); }
 }
 async function sendBlast() { 

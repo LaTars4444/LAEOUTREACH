@@ -53,7 +53,7 @@ login_manager.login_view = 'login'
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# STRIPE PRICE IDS
+# STRIPE PRICE IDS (REPLACE WITH YOURS)
 PRICE_WEEKLY = "price_1SpxexFXcDZgM3Vo0iYmhfpb"
 PRICE_MONTHLY = "price_1SqIjgFXcDZgM3VoEwrUvjWP"
 PRICE_LIFETIME = "price_1Spy7SFXcDZgM3VoVZv71I63"
@@ -106,8 +106,8 @@ class Lead(db.Model):
     email = db.Column(db.String(100), nullable=True)
     distress_type = db.Column(db.String(100)) 
     status = db.Column(db.String(50), default="New") 
-    source = db.Column(db.String(50), default="Manual")
-    link = db.Column(db.String(500)) 
+    source = db.Column(db.String(50), default="Manual") # WILL ALWAYS SAY 'TITAN INTELLIGENCE'
+    link = db.Column(db.String(500)) # Hidden from user
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -139,17 +139,18 @@ with app.app_context():
         conn.commit()
 
 # ---------------------------------------------------------
-# 4. ACCESS CONTROL (PRICING LOGIC)
+# 4. STRICT PAYMENT WALL LOGIC
 # ---------------------------------------------------------
 def check_access(user, feature):
     """
-    feature: 'email' (Lifetime or Sub), 'pro' (AI/Hunter - Sub Only)
+    feature: 'pro' (AI/Hunter - Sub Only), 'email' (Lifetime or Sub)
     """
     if not user: return False
     
-    # 1. 48-HOUR TRIAL (Everything unlocked)
+    # 1. 48-HOUR TRIAL (Strict Check)
     hours = (datetime.utcnow() - user.created_at).total_seconds() / 3600
-    if hours < 48: return True
+    if hours < 48:
+        return True # Access Allowed
 
     # 2. ACTIVE SUBSCRIPTION (Unlocks EVERYTHING)
     if user.subscription_status in ['weekly', 'monthly']:
@@ -159,22 +160,23 @@ def check_access(user, feature):
     # 3. LIFETIME PLAN (Unlocks EMAIL ONLY)
     if user.subscription_status == 'lifetime':
         if feature == 'email': return True
-        else: return False
+        else: return False # Block AI/Hunter
 
-    return False
+    return False # Default Block
 
 # ---------------------------------------------------------
-# 5. BLACK BOX DEAL HUNTER (OBFUSCATED)
+# 5. AGGRESSIVE DEAL HUNTER (IMPROVED PARSING)
 # ---------------------------------------------------------
 def search_off_market(city, state):
     if not SEARCH_API_KEY: return []
 
+    # Dorks optimized for contact extraction
     queries = [
-        f'site:craigslist.org "{city}" "for sale by owner" "fixer upper" -agent',
-        f'"{city}" "{state}" probate estate notice property',
-        f'"{city}" "{state}" divorce decree real estate',
-        f'"{city}" "{state}" tax deed sale list',
-        f'"{city}" "{state}" pre-foreclosure listings'
+        f'site:craigslist.org "{city}" "real estate" -broker phone',
+        f'"{city}" "{state}" "for sale by owner" contact',
+        f'"{city}" "probate" notice to creditors',
+        f'"{city}" "divorce" decree property address',
+        f'"{city}" "foreclosure" auction list pdf'
     ]
     
     leads_found = []
@@ -184,18 +186,23 @@ def search_off_market(city, state):
         try:
             res = service.cse().list(q=q, cx=SEARCH_CX, num=5).execute()
             for item in res.get('items', []):
-                snippet = item.get('snippet', '') + " " + item.get('title', '')
+                snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
+                
+                # Aggressive Phone Regex (Matches (555) 555-5555, 555-555-5555, 555.555.5555)
                 phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
+                
+                # Aggressive Email Regex
                 emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                title_parts = item.get('title').split('|')[0].split('-')
-                clean_address = title_parts[0].strip()
-                if len(clean_address) < 5: clean_address = f"Unknown Property in {city}"
+                
+                # Skip if no contact info found (Quality Control)
+                if not phones and not emails:
+                    continue
 
                 leads_found.append({
-                    'address': clean_address,
+                    'address': item.get('title').split('|')[0].strip(),
                     'phone': phones[0] if phones else 'Unknown',
                     'email': emails[0] if emails else 'Unknown',
-                    'source': 'Titan Intelligence',
+                    'source': 'Titan Intelligence', # Hidden Source
                     'link': item.get('link')
                 })
         except Exception:
@@ -211,6 +218,7 @@ def search_off_market(city, state):
 def dashboard():
     my_leads = Lead.query.filter_by(submitter_id=current_user.id).order_by(Lead.created_at.desc()).all()
     
+    # Pass access flags to template
     has_pro = check_access(current_user, 'pro')
     has_email = check_access(current_user, 'email')
     
@@ -223,11 +231,13 @@ def pricing():
 @app.route('/leads/hunt', methods=['POST'])
 @login_required
 def hunt_leads():
+    # STRICT PAYMENT WALL
     if not check_access(current_user, 'pro'):
-        return jsonify({'error': 'Trial expired. Subscribe to unlock Deal Hunter.'}), 403
+        return jsonify({'error': 'Trial expired. Upgrade to unlock Deal Hunter.'}), 403
 
     city = request.form.get('city')
     state = request.form.get('state')
+    
     raw_leads = search_off_market(city, state)
     
     count = 0
@@ -240,21 +250,30 @@ def hunt_leads():
                 phone=l['phone'],
                 email=l['email'],
                 distress_type="Off-Market Distress",
-                source="Titan Intelligence",
-                link=l['link'],
+                source="Titan Intelligence", 
+                link=l['link'], 
                 status="New"
             )
             db.session.add(new_lead)
             count += 1
     db.session.commit()
     
-    if count == 0: return jsonify({'message': 'Scan complete. No new distress signals found.'})
-    return jsonify({'message': f"Success! {count} Off-Market Leads added to your list."})
+    if count == 0:
+        return jsonify({'message': 'Scan complete. No direct contact info found in this batch.'})
+    
+    return jsonify({'message': f"Success! {count} High-Quality Leads added to your list."})
 
+# ---------------------------------------------------------
+# 7. PAYMENT CHECKOUT
+# ---------------------------------------------------------
 @app.route('/create-checkout-session/<plan_type>')
 @login_required
 def create_checkout_session(plan_type):
-    prices = {'weekly': PRICE_WEEKLY, 'monthly': PRICE_MONTHLY, 'lifetime': PRICE_LIFETIME}
+    prices = {
+        'weekly': PRICE_WEEKLY,
+        'monthly': PRICE_MONTHLY,
+        'lifetime': PRICE_LIFETIME
+    }
     price_id = prices.get(plan_type)
     if not price_id: return "Invalid Plan", 400
 
@@ -365,7 +384,7 @@ def callback_google():
     return redirect(url_for('dashboard'))
 
 # ---------------------------------------------------------
-# 10. PUBLIC ROUTES
+# 10. PUBLIC ROUTES (IMPROVED LOGIN UI)
 # ---------------------------------------------------------
 @app.route('/sell', methods=['GET', 'POST'])
 def sell_property():
@@ -593,7 +612,7 @@ async function postToSocials(platform) {
 {% endblock %}
 """,
     'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>TITAN</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head><body class="bg-light"><nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="/">TITAN ⚡</a><ul class="navbar-nav ms-auto gap-3"><li class="nav-item"><a class="btn btn-warning btn-sm" href="/sell">Sell</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div></body></html>""",
-    'login.html': """{% extends "base.html" %} {% block content %} <form method="POST" class="mt-5 mx-auto" style="max-width:300px"><h3>Login</h3><input name="email" class="form-control mb-2" placeholder="Email"><input type="password" name="password" class="form-control mb-2" placeholder="Password"><button class="btn btn-primary w-100">Login</button><a href="/register">Register</a></form> {% endblock %}""",
+    'login.html': """{% extends "base.html" %} {% block content %} <div class="row justify-content-center"><div class="col-md-5"><div class="text-center mb-4"><a href="/sell" class="btn btn-warning btn-lg fw-bold shadow w-100">💰 Sell My House For Cash</a></div><div class="card shadow-sm"><div class="card-body p-4"><h3 class="text-center mb-3">Investor Login</h3><form method="POST"><input name="email" class="form-control mb-3" placeholder="Email"><input type="password" name="password" class="form-control mb-3" placeholder="Password"><button class="btn btn-dark w-100">Login</button><div class="text-center mt-3"><a href="/register">Create Account</a></div></form></div></div></div></div> {% endblock %}""",
     'register.html': """{% extends "base.html" %} {% block content %} <form method="POST" class="mt-5 mx-auto" style="max-width:300px"><h3>Register</h3><input name="email" class="form-control mb-2" placeholder="Email"><input type="password" name="password" class="form-control mb-2" placeholder="Password"><button class="btn btn-success w-100">Join</button></form> {% endblock %}""",
     'sell.html': """{% extends "base.html" %} {% block content %} <div class="container mt-5"><h2>Sell Property</h2><form method="POST"><div class="mb-3"><label>Address</label><input name="address" class="form-control" required></div><div class="mb-3"><label>Phone</label><input name="phone" class="form-control" required></div><button class="btn btn-success w-100">Get Offer</button></form></div> {% endblock %}""",
     'buy_box.html': """{% extends "base.html" %} {% block content %} <div class="container mt-5"><h2>Join Buyers List</h2><form method="POST"><div class="mb-3"><label>Locations</label><input name="locations" class="form-control"></div><button class="btn btn-primary">Submit</button></form></div> {% endblock %}"""

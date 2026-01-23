@@ -76,7 +76,7 @@ login_manager.login_view = 'login'
 ADMIN_EMAIL = "leewaits836@gmail.com"
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
-# Initialize Groq (Handles missing key gracefully by checking later)
+# Initialize Groq
 try:
     groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 except:
@@ -157,14 +157,15 @@ with app.app_context():
     db.create_all()
 
 # ---------------------------------------------------------
-# 3. BACKGROUND TASKS (THREADED)
+# 3. BACKGROUND TASKS (THREADED & OPTIMIZED)
 # ---------------------------------------------------------
 def task_scraper(app_obj, user_id, city, state):
     with app_obj.app_context():
         log_activity(f"🚀 UNLEASHED HUNTING STARTED: {city}, {state}")
+        log_activity("💰 Paid Quota Mode Active: 10,000 Daily Limit")
         
         if not SEARCH_API_KEY or not SEARCH_CX:
-            log_activity("❌ ERROR: 'GOOGLE_SEARCH_API_KEY' or 'GOOGLE_SEARCH_CX' missing in Render.")
+            log_activity("❌ ERROR: 'GOOGLE_SEARCH_API_KEY' or 'GOOGLE_SEARCH_CX' missing.")
             return
 
         try:
@@ -173,14 +174,17 @@ def task_scraper(app_obj, user_id, city, state):
             log_activity(f"❌ API CRITICAL FAIL: {str(e)}")
             return
 
-        target_sites = ["craigslist.org", "fsbo.com", "facebook.com", "zillow.com"]
-        keywords = random.sample(KEYWORD_BANK, 10) 
+        # TARGET HIGH VALUE SITES
+        target_sites = ["fsbo.com", "facebook.com", "zillow.com", "realtor.com", "craigslist.org"]
+        # Use more keywords since we have budget
+        keywords = random.sample(KEYWORD_BANK, 12) 
         total_leads = 0
         
         for site in target_sites:
             log_activity(f"🔎 Deep Scanning {site}...")
             for kw in keywords:
-                # 10 Pages Deep (100 Results)
+                # PAGINATION: 10 Pages Deep (100 Results per keyword)
+                # 100 queries/minute limit = ~0.6s per query needed to be safe.
                 for start in range(1, 101, 10): 
                     try:
                         q = f'site:{site} "{city}" "{kw}"'
@@ -193,10 +197,11 @@ def task_scraper(app_obj, user_id, city, state):
                             snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
                             link = item.get('link', '#')
                             
+                            # Extract Contact Info
                             phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', snippet)
                             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
                             
-                            # MUST have contact info
+                            # Strict Filter: Must have Phone OR Email
                             if phones or emails:
                                 if not Lead.query.filter_by(link=link, submitter_id=user_id).first():
                                     lead = Lead(
@@ -213,15 +218,16 @@ def task_scraper(app_obj, user_id, city, state):
                                     log_activity(f"✅ FOUND: {phones[0] if phones else emails[0]}")
                         
                         db.session.commit()
-                        time.sleep(0.2) 
+                        # CRITICAL SPEED CONTROL: 0.8s wait ensures we stay under 100/min
+                        time.sleep(0.8) 
 
                     except HttpError as e:
                         if e.resp.status == 403:
-                            log_activity(f"❌ API 403: {e.content}. Check Billing/Quota.")
+                            log_activity(f"❌ API 403: {e.content}. Check Billing is ACTIVE on Google Cloud.")
                             return
                         if e.resp.status == 429:
-                            log_activity("⚠️ Rate Limit. Sleeping 5s...")
-                            time.sleep(5)
+                            log_activity("⚠️ Rate Limit (100/min). Cooling down for 10s...")
+                            time.sleep(10)
                             continue
                         break
                     except Exception as e:
@@ -323,7 +329,7 @@ def hunt_leads():
     state = request.form.get('state')
     thread = threading.Thread(target=task_scraper, args=(app, current_user.id, city, state))
     thread.start()
-    return jsonify({'message': f"🚀 UNLEASHED Scan started for {city}. This will dig deep. Watch Terminal."})
+    return jsonify({'message': f"🚀 UNLEASHED Scan started for {city}. Watch Terminal."})
 
 @app.route('/email/campaign', methods=['POST'])
 @login_required
@@ -347,10 +353,6 @@ def create_video():
     desc = request.form.get('description')
     photo = request.files.get('photo')
     log_activity("🎬 AI Video Generation Started...")
-    
-    if not groq_client:
-        return jsonify({'error': "GROQ_API_KEY is missing in Render Settings."}), 500
-
     try:
         filename = secure_filename(f"img_{int(time.time())}.jpg")
         img_path = os.path.join(UPLOAD_FOLDER, filename)

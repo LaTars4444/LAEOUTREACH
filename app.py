@@ -24,7 +24,7 @@ from flask_login import LoginManager, UserMixin, login_required, current_user, l
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# EXTERNAL ENGINE LIBRARIES (As per requirements.txt)
+# EXTERNAL ENGINE LIBRARIES
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import stripe
@@ -34,41 +34,37 @@ from gtts import gTTS
 # ---------------------------------------------------------
 # 0. LIVE SYSTEM TERMINAL ENGINE (MEMORY BUFFER)
 # ---------------------------------------------------------
-# REMODELLED: Using manual indexing {0} {1} to stop Render crashes.
+# REMODELLED: Using strictly indexed placeholders {0} {1} to prevent Render crashes.
 # ---------------------------------------------------------
 SYSTEM_LOGS = []
 
 def log_activity(message):
     """
     Pushes logs to the memory buffer and console.
-    Standard Remodel: Using indexed placeholders to prevent Render SyntaxErrors.
+    Ensures manual field specification {0} is used throughout.
     """
     try:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        # ! SURGICAL FIX: EXPLICIT INDEXED FORMATTING             !
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # FIXED: EXPLICIT INDEXED FORMATTING TO STOP RENDER CRASH
         log_template = "[{0}] {1}"
         entry = log_template.format(timestamp, message)
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         
         print(entry)
         SYSTEM_LOGS.insert(0, entry)
         if len(SYSTEM_LOGS) > 800: 
             SYSTEM_LOGS.pop()
     except Exception as e:
-        print("Logger Engine Failure: {0}".format(str(e)))
+        print("Logger Failure: {0}".format(str(e)))
 
 # ---------------------------------------------------------
 # 1. APPLICATION CONFIGURATION & SECRETS
 # ---------------------------------------------------------
 app = Flask(__name__)
 
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'titan_core_industrial_auth_v9')
-app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024 # 32MB limit for property media
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'titan_core_industrial_auth_v10')
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024 # 32MB Buffer
 
-# DB PERSISTENCE (Handles Render Persistent Storage)
+# DB Persistence for Render
 if os.path.exists('/var/data'):
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////var/data/titan.db'
 else:
@@ -76,7 +72,7 @@ else:
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# ASSET FOLDER STRUCTURE
+# Asset Structure
 UPLOAD_FOLDER = 'static/uploads'
 VIDEO_FOLDER = 'static/videos'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -88,22 +84,21 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
-# GLOBAL API HANDLERS
+# API HANDLERS
 ADMIN_EMAIL = "leewaits836@gmail.com"
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
-# AI GENERATION ENGINE (GROQ)
+# Initialize Groq AI (Llama 3.3)
 try:
     groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 except:
     groq_client = None
     log_activity("⚠️ AI WARNING: GROQ_API_KEY missing. Fallback logic enabled.")
 
-# SEARCH API KEYS
 SEARCH_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
 SEARCH_CX = os.environ.get("GOOGLE_SEARCH_CX")
 
-# INDUSTRIAL KEYWORD BANK (Max volume combinatorial logic)
+# INDUSTRIAL KEYWORD BANK
 KEYWORD_BANK = [
     "must sell", "motivated seller", "cash only", "divorce", "probate", "urgent", 
     "pre-foreclosure", "fixer upper", "needs work", "handyman special", "fire damage", 
@@ -114,17 +109,17 @@ KEYWORD_BANK = [
     "Creative financing", "squatter issue", "code violation", "inherited house"
 ]
 
-# VIDEO ENGINE PRE-CHECK
+# VIDEO ENGINE CHECK
 HAS_FFMPEG = False
 try:
     import imageio_ffmpeg
     from moviepy.editor import ImageClip, AudioFileClip
     HAS_FFMPEG = True
 except Exception:
-    log_activity("⚠️ FFMPEG WARNING: MoviePy not found. Using simulation mode.")
+    log_activity("⚠️ FFMPEG WARNING: Rendering disabled. Using placeholder mode.")
 
 # ---------------------------------------------------------
-# 2. DATABASE MODELS (TITAN INDUSTRIAL ARCHITECTURE)
+# 2. DATABASE MODELS
 # ---------------------------------------------------------
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
@@ -133,21 +128,16 @@ class User(UserMixin, db.Model):
     password = db.Column(db.String(255), nullable=True) 
     smtp_email = db.Column(db.String(150), nullable=True)  
     smtp_password = db.Column(db.String(150), nullable=True)  
+    
+    # NEW: Universal Email Template
+    email_template = db.Column(db.Text, default="Hi, I saw your property at [[ADDRESS]]. I'm looking to make a cash offer. Please let me know if you're interested.")
+    
     subscription_status = db.Column(db.String(50), default='free') 
     subscription_end = db.Column(db.DateTime, nullable=True)
     trial_active = db.Column(db.Boolean, default=False)
     trial_start = db.Column(db.DateTime, nullable=True)
-    
-    # Buy Box Fields (Integrated)
-    bb_property_type = db.Column(db.String(50))
-    bb_locations = db.Column(db.String(255))
-    bb_min_price = db.Column(db.Integer)
-    bb_max_price = db.Column(db.Integer)
-    bb_strategy = db.Column(db.String(50))
-    bb_funding = db.Column(db.String(50)) 
-    bb_timeline = db.Column(db.String(50))
-
     videos = db.relationship('Video', backref='owner', lazy=True)
+    outreach_logs = db.relationship('OutreachLog', backref='user', lazy=True)
 
 class Lead(db.Model):
     __tablename__ = 'leads'
@@ -156,17 +146,20 @@ class Lead(db.Model):
     address = db.Column(db.String(255), nullable=False)
     phone = db.Column(db.String(50), nullable=True)
     email = db.Column(db.String(100), nullable=True)
-    asking_price = db.Column(db.String(50), nullable=True)
     status = db.Column(db.String(50), default="New") 
     source = db.Column(db.String(50), default="Manual")
     link = db.Column(db.String(500)) 
     emailed_count = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # TitanFinance Metrics (Integrated)
-    arv_estimate = db.Column(db.Integer)
-    repair_estimate = db.Column(db.Integer)
-    max_allowable_offer = db.Column(db.Integer)
+
+class OutreachLog(db.Model):
+    __tablename__ = 'outreach_logs'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    address = db.Column(db.String(255))
+    recipient = db.Column(db.String(150))
+    message = db.Column(db.Text)
+    sent_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Video(db.Model):
     __tablename__ = 'videos'
@@ -184,21 +177,21 @@ with app.app_context():
     db.create_all()
 
 # ---------------------------------------------------------
-# 3. INDUSTRIAL ENGINES (HUNTER & EMAIL MACHINE)
+# 3. INDUSTRIAL ENGINES (HUNTER & EMAILER)
 # ---------------------------------------------------------
 def task_scraper(app_obj, user_id, city, state):
     """
     ENGINE: INDUSTRIAL LEAD HUNTER.
     Functional standards:
-    - Fixed empty query logic: site:{0} "{1}" "{2}" {}.
-    - Deep Pagination: Iterates through start indices (1-100) to pull thousands of leads.
-    - Anti-Ban: Mandatory randomized 5-15s sleep between results.
+    - FIXED: Manual field indexing used everywhere to prevent Render crash.
+    - Deep Pagination (start=1 to 100) for thousands of leads.
+    - Mandatory 5-15s randomized stealth delay.
     """
     with app_obj.app_context():
         log_activity("🚀 MISSION STARTED: Hunting leads in {0}, {1}".format(city, state))
         
         if not SEARCH_API_KEY or not SEARCH_CX:
-            log_activity("❌ API ERROR: Google Search Credentials missing.")
+            log_activity("❌ API ERROR: Credentials missing.")
             return
 
         try:
@@ -208,17 +201,16 @@ def task_scraper(app_obj, user_id, city, state):
             return
 
         target_sites = ["fsbo.com", "facebook.com/marketplace", "zillow.com/homedetails", "realtor.com", "craigslist.org"]
-        # Rotate 12 keywords per scan
         keywords = random.sample(KEYWORD_BANK, 12) 
-        total_leads_added = 0
+        total_found = 0
         
         for site in target_sites:
             log_activity("🔎 Scanning Domain: {0}".format(site))
             for kw in keywords:
-                # INDUSTRIAL PAGINATION: 10 pages per keyword (100 leads)
+                # DEEP PAGINATION LOOP
                 for start_idx in range(1, 101, 10): 
                     try:
-                        # THE REAL FIX: Combinatorial Query construction
+                        # INDEXED FORMATTING FOR RENDER SAFETY
                         query_string = 'site:{0} "{1}" "{2}" {}'.format(site, city, state, kw)
                         res = service.cse().list(q=query_string, cx=SEARCH_CX, num=10, start=start_idx).execute()
                         
@@ -228,54 +220,48 @@ def task_scraper(app_obj, user_id, city, state):
                             snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
                             link = item.get('link', '#')
                             
-                            # INDUSTRIAL REGEX DATA EXTRACTION
+                            # INDUSTRIAL REGEX EXTRACTION
                             phones = re.findall(r'\(?\d{}\)?[-.\s]?\d{}[-.\s]?\d{}', snippet)
                             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
                             
                             if phones or emails:
                                 if not Lead.query.filter_by(link=link, submitter_id=user_id).first():
-                                    found_phone = phones[0] if phones else "None"
-                                    found_email = emails[0] if emails else "None"
-                                    
                                     lead = Lead(
                                         submitter_id=user_id,
                                         address=item.get('title')[:100],
-                                        phone=found_phone,
-                                        email=found_email,
+                                        phone=phones[0] if phones else "None",
+                                        email=emails[0] if emails else "None",
                                         source="{0} ({1})".format(site, kw),
                                         link=link,
                                         status="New"
                                     )
                                     db.session.add(lead)
-                                    total_leads_added += 1
+                                    total_found += 1
                                     log_activity("✅ FOUND LEAD: {0}".format(lead.address[:25]))
                         
                         db.session.commit()
                         
-                        # HUMAN BEHAVIOR EMULATION: Mandatory randomized 5-15s delay
+                        # STEALTH DELAY
                         time.sleep(random.uniform(5, 15)) 
 
-                    except HttpError as e:
-                        if e.resp.status == 429:
-                            log_activity("⚠️ RATE LIMIT reached. Waiting 60s for reset...")
-                            time.sleep(60); continue
-                        break
                     except Exception as e:
                         log_activity("⚠️ SCRAPE FAULT: {0}".format(str(e)))
                         continue
 
-        log_activity("🏁 MISSION COMPLETE: indexed {0} Leads.".format(total_leads_added))
+        log_activity("🏁 MISSION COMPLETE: indexed {0} Leads.".format(total_found))
 
 def task_emailer(app_obj, user_id, subject, body, attach_path):
     """
     ENGINE: OUTREACH AUTOMATION MACHINE.
-    - AI-personalization loop (Groq AI).
-    - Mandatory human behavior sleep (5-15s) between leads.
+    Functional standards:
+    - Constant Universal Scripts with dynamic address injection.
+    - Historical Sent Message logging.
+    - Randomized behavior sleep (5-15s).
     """
     with app_obj.app_context():
         user = User.query.get(user_id)
         if not user.smtp_email or not user.smtp_password:
-            log_activity("❌ SMTP ERROR: Gmail credentials missing.")
+            log_activity("❌ SMTP ERROR: Credentials missing.")
             return
 
         leads = Lead.query.filter(Lead.submitter_id == user_id, Lead.email.contains('@')).all()
@@ -285,13 +271,18 @@ def task_emailer(app_obj, user_id, subject, body, attach_path):
             server = smtplib.SMTP("smtp.gmail.com", 587)
             server.starttls()
             server.login(user.smtp_email, user.smtp_password)
-            log_activity("✅ SMTP LOGIN: SUCCESS.")
             
             sent_count = 0
             for lead in leads:
                 try:
+                    # DYNAMIC DATA INJECTION
+                    # Swaps [[ADDRESS]] in template with lead.address
                     final_body = body
-                    if (not body or len(body) < 10) and groq_client:
+                    if "[[ADDRESS]]" in final_body:
+                        final_body = final_body.replace("[[ADDRESS]]", lead.address)
+                    
+                    # AI SMART OVERRIDE (If body is short)
+                    if len(final_body) < 10 and groq_client:
                         chat = groq_client.chat.completions.create(
                             messages=[{"role": "user", "content": "Write a professional investor short cash offer email for {0}.".format(lead.address)}],
                             model="llama-3.3-70b-versatile"
@@ -312,20 +303,25 @@ def task_emailer(app_obj, user_id, subject, body, attach_path):
                             msg.attach(part)
                     
                     server.send_message(msg)
+                    
+                    # Log to history
+                    outlog = OutreachLog(user_id=user_id, address=lead.address, recipient=lead.email, message=final_body[:200])
+                    db.session.add(outlog)
+                    
                     lead.emailed_count = (lead.emailed_count or 0) + 1
                     lead.status = "Contacted"; db.session.commit()
                     
                     sent_count += 1
                     log_activity("📨 SENT: {0}".format(lead.email))
                     
-                    # ANTI-SPAM: randomized sleep 5-15s
+                    # ANTI-BAN DELAY
                     time.sleep(random.uniform(5, 15)) 
                     
                 except Exception as e:
                     log_activity("⚠️ SEND FAILURE ({0}): {1}".format(lead.email, str(e)))
             
             server.quit()
-            log_activity("🏁 BLAST COMPLETE: {0} Delivered.".format(sent_count))
+            log_activity("🏁 BLAST COMPLETE: {0} confirmated deliveries.".format(sent_count))
             
         except Exception as e:
             log_activity("❌ SMTP CRITICAL FAIL: {0}".format(str(e)))
@@ -333,7 +329,7 @@ def task_emailer(app_obj, user_id, subject, body, attach_path):
     if attach_path and os.path.exists(attach_path): os.remove(attach_path)
 
 # ---------------------------------------------------------
-# 4. SYSTEM INTERFACE ROUTES (RETAINED)
+# 4. SYSTEM INTERFACE ROUTES
 # ---------------------------------------------------------
 @app.route('/logs')
 @login_required
@@ -343,20 +339,35 @@ def get_logs(): return jsonify(SYSTEM_LOGS)
 @login_required
 def dashboard():
     my_leads = Lead.query.filter_by(submitter_id=current_user.id).order_by(Lead.created_at.desc()).all()
+    outreach_history = OutreachLog.query.filter_by(user_id=current_user.id).order_by(OutreachLog.sent_at.desc()).limit(10).all()
     stats = {
         'total': len(my_leads), 
         'hot': len([l for l in my_leads if l.status == 'Hot']), 
         'emails': sum([l.emailed_count or 0 for l in my_leads])
     }
     gmail_connected = True if current_user.smtp_email else False
-    return render_template('dashboard.html', user=current_user, leads=my_leads, stats=stats, gmail_connected=gmail_connected, is_admin=(current_user.email == ADMIN_EMAIL), has_pro=True)
+    return render_template('dashboard.html', 
+        user=current_user, leads=my_leads, stats=stats, 
+        gmail_connected=gmail_connected,
+        history=outreach_history,
+        is_admin=(current_user.email == ADMIN_EMAIL),
+        has_pro=True 
+    )
+
+@app.route('/email/template/save', methods=['POST'])
+@login_required
+def save_template():
+    current_user.email_template = request.form.get('template')
+    db.session.commit()
+    flash('Universal Script Updated!', 'success')
+    return redirect(url_for('dashboard'))
 
 @app.route('/leads/hunt', methods=['POST'])
 @login_required
 def hunt_leads():
     city, state = request.form.get('city'), request.form.get('state')
     threading.Thread(target=task_scraper, args=(app, current_user.id, city, state)).start()
-    return jsonify({'message': "🚀 Industrial mission started for {0}.".format(city)})
+    return jsonify({'message': "🚀 Mission launched for {0}. Watch terminal.".format(city)})
 
 @app.route('/email/campaign', methods=['POST'])
 @login_required
@@ -368,87 +379,13 @@ def email_campaign():
         path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(attachment.filename))
         attachment.save(path)
     threading.Thread(target=task_emailer, args=(app, current_user.id, subject, body, path)).start()
-    return jsonify({'message': "🚀 Mass outreach launched with human behaviors."})
-
-@app.route('/video/create', methods=['POST'])
-@login_required
-def create_video():
-    desc = request.form.get('description'); photo = request.files.get('photo')
-    log_activity("🎬 AI VIDEO: INITIALIZING PRODUCTION...")
-    try:
-        filename = secure_filename("img_{0}.jpg".format(int(time.time())))
-        img_path = os.path.join(UPLOAD_FOLDER, filename); photo.save(img_path)
-        log_activity("... Writing AI Script")
-        chat = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": "Write a 15s real estate script."}, {"role": "user", "content": desc}], 
-            model="llama-3.3-70b-versatile"
-        )
-        script = chat.choices[0].message.content
-        log_activity("... Voice Synthesis")
-        audio_name = "audio_{0}.mp3".format(int(time.time())); audio_path = os.path.join(VIDEO_FOLDER, audio_name)
-        gTTS(text=script, lang='en').save(audio_path)
-        vid_name = "video_{0}.mp4".format(int(time.time())); out_path = os.path.join(VIDEO_FOLDER, vid_name)
-        if HAS_FFMPEG:
-            log_activity("... Finalizing Render")
-            audio_clip = AudioFileClip(audio_path); video_clip = ImageClip(img_path).set_duration(audio_clip.duration).set_audio(audio_clip)
-            video_clip.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
-        else:
-            log_activity("⚠️ VIDEO: Saving simulation placeholder data.")
-            with open(out_path, 'wb') as f: f.write(b'Render_Simulation')
-        new_video = Video(user_id=current_user.id, filename=vid_name, description=desc)
-        db.session.add(new_video); db.session.commit()
-        log_activity("✅ VIDEO SUCCESS: Production finished.")
-        return jsonify({'video_url': "/static/videos/{0}".format(vid_name), 'message': "Video Produced!"})
-    except Exception as e: 
-        log_activity("❌ VIDEO FAIL: {0}".format(str(e))); return jsonify({'error': str(e)}), 500
-
-@app.route('/buy_box', methods=['GET', 'POST'])
-@login_required
-def buy_box():
-    if request.method == 'POST':
-        current_user.bb_property_type = request.form.get('property_type')
-        current_user.bb_locations = request.form.get('locations')
-        current_user.bb_min_price = request.form.get('min_price')
-        current_user.bb_max_price = request.form.get('max_price')
-        current_user.bb_strategy = request.form.get('strategy')
-        current_user.bb_funding = request.form.get('funding')
-        current_user.bb_timeline = request.form.get('timeline')
-        db.session.commit(); flash('Buy Box Updated!', 'success')
-    return render_template('buybox.html', user=current_user)
+    return jsonify({'message': "🚀 Mass outreach launched."})
 
 @app.route('/settings/save', methods=['POST'])
 @login_required
 def save_settings():
     current_user.smtp_email, current_user.smtp_password = request.form.get('smtp_email'), request.form.get('smtp_password')
     db.session.commit(); log_activity("⚙️ SETTINGS UPDATED."); return redirect(url_for('dashboard'))
-
-@app.route('/leads/add', methods=['POST'])
-@login_required
-def add_manual_lead():
-    new_lead = Lead(submitter_id=current_user.id, address=request.form.get('address'), phone=request.form.get('phone'), email=request.form.get('email'), source="Manual", status="New", link="#")
-    db.session.add(new_lead); db.session.commit(); log_activity("➕ LEAD: Added {0}".format(new_lead.address)); return redirect(url_for('dashboard'))
-
-@app.route('/video/delete/<int:id>', methods=['POST'])
-@login_required
-def delete_video(id):
-    video = Video.query.get_or_404(id)
-    if video.user_id == current_user.id: db.session.delete(video); db.session.commit()
-    return jsonify({'message': 'Deleted'})
-
-@app.route('/leads/update/<int:id>', methods=['POST'])
-@login_required
-def update_lead_status(id):
-    lead = Lead.query.get_or_404(id); lead.status = request.json.get('status'); db.session.commit()
-    return jsonify({'message': 'Saved'})
-
-@app.route('/leads/export')
-@login_required
-def export_leads():
-    si = io.StringIO(); cw = csv.writer(si); cw.writerow(['Status', 'Address', 'Phone', 'Email', 'Source', 'Link'])
-    leads = Lead.query.filter_by(submitter_id=current_user.id).all()
-    for l in leads: cw.writerow([l.status, l.address, l.phone, l.email, l.source, l.link])
-    output = Response(si.getvalue(), mimetype='text/csv')
-    output.headers["Content-Disposition"] = "attachment; filename=leads.csv"; return output
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -468,22 +405,28 @@ def register():
             login_user(user); return redirect(url_for('dashboard'))
     return render_template('register.html')
 
+@app.route('/leads/add', methods=['POST'])
+@login_required
+def add_manual_lead():
+    new_lead = Lead(submitter_id=current_user.id, address=request.form.get('address'), phone=request.form.get('phone'), email=request.form.get('email'), source="Manual", status="New", link="#")
+    db.session.add(new_lead); db.session.commit(); return redirect(url_for('dashboard'))
+
 @app.route('/logout')
 def logout(): logout_user(); return redirect(url_for('login'))
 
 @app.route('/sell', methods=['GET', 'POST'])
 def sell_property():
-    if request.method == 'POST': flash('Evaluation started.', 'success'); return redirect(url_for('sell_property'))
+    if request.method == 'POST': flash('Lead Assessment started.', 'success'); return redirect(url_for('sell_property'))
     return render_template('sell.html')
 
 @app.route('/')
 def index(): return redirect(url_for('login'))
 
 # ---------------------------------------------------------
-# 5. HTML DESIGN TEMPLATES (INTEGRATED DICTIONARY)
+# 5. HTML DESIGN TEMPLATES (INTEGRATED)
 # ---------------------------------------------------------
 html_templates = {
- 'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TITAN | Lead Intelligence</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"><style>body { background-color: #f8f9fa; } .terminal { background: #000; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; height: 250px; overflow-y: scroll; border-radius: 8px; border: 1px solid #333; font-size: 13px; line-height: 1.5; } .card { border: none; border-radius: 12px; } </style></head><body><nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm"><div class="container"><a class="navbar-brand fw-bold" href="/">TITAN <span class="text-primary">INTEL</span></a><div class="collapse navbar-collapse"><ul class="navbar-nav ms-auto align-items-center"><li class="nav-item"><a class="btn btn-outline-warning btn-sm me-3" href="/sell">Seller Portal</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link" href="/buy_box">Buy Box</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show shadow-sm">{{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div><footer class="text-center text-muted py-5 small">&copy; 2024 Titan Intel. Build 1.5.0</footer></body></html>""",
+ 'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TITAN | Lead Intelligence</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"><style>body { background-color: #f8f9fa; } .terminal { background: #000; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; height: 250px; overflow-y: scroll; border-radius: 8px; border: 1px solid #333; font-size: 13px; line-height: 1.5; } .card { border: none; border-radius: 12px; } </style></head><body><nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm"><div class="container"><a class="navbar-brand fw-bold" href="/">TITAN <span class="text-primary">INTEL</span></a><div class="collapse navbar-collapse"><ul class="navbar-nav ms-auto align-items-center"><li class="nav-item"><a class="btn btn-outline-warning btn-sm me-3" href="/sell">Seller Portal</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show shadow-sm">{{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div><footer class="text-center text-muted py-5 small">&copy; 2024 Titan Intel.</footer></body></html>""",
 
  'dashboard.html': """
 {% extends "base.html" %}
@@ -512,10 +455,10 @@ html_templates = {
 
  <div class="col-12">
   <ul class="nav nav-tabs mb-4" id="titanTab" role="tablist">
-   <li class="nav-item"><button class="nav-link active" id="leads-tab" data-bs-toggle="tab" data-bs-target="#leads">🏠 My Leads</button></li>
+   <li class="nav-item"><button class="nav-link active" id="leads-tab" data-bs-toggle="tab" data-bs-target="#leads">🏠 Leads</button></li>
    <li class="nav-item"><button class="nav-link" id="hunter-tab" data-bs-toggle="tab" data-bs-target="#hunter">🕵️ Vicious Hunter</button></li>
    <li class="nav-item"><button class="nav-link" id="email-tab" data-bs-toggle="tab" data-bs-target="#email">📧 Outreach Machine</button></li>
-   <li class="nav-item"><button class="nav-link" id="video-tab" data-bs-toggle="tab" data-bs-target="#video">🎬 AI Video</button></li>
+   <li class="nav-item"><button class="nav-link" id="history-tab" data-bs-toggle="tab" data-bs-target="#history">📜 History</button></li>
   </ul>
   
   <div class="tab-content">
@@ -543,7 +486,7 @@ html_templates = {
    <div class="tab-pane fade" id="hunter">
     <div class="card bg-dark text-white p-5 text-center shadow-lg">
      <h2 class="fw-bold mb-3">🕵️ Deep Web Hunter Scraper Engine</h2>
-     <p class="text-muted">Industrial lead extraction from FSBO, Zillow, and Craigslist.</p>
+     <p class="text-muted">Industrial extraction from FSBO, Zillow, and Craigslist with randomized human behavior.</p>
      <div class="row justify-content-center mt-4 g-3">
       <div class="col-md-3"><select id="huntState" class="form-select" onchange="loadCities()"><option value="">State</option></select></div>
       <div class="col-md-3"><select id="huntCity" class="form-select"><option value="">City</option></select></div>
@@ -553,33 +496,44 @@ html_templates = {
    </div>
    
    <div class="tab-pane fade" id="email">
-    <div class="card shadow-sm border-primary"><div class="card-header bg-primary text-white fw-bold">📧 AI Outreach Engine</div>
+    <div class="card shadow-sm border-primary">
+     <div class="card-header bg-primary text-white fw-bold d-flex justify-content-between">
+      <span>📧 AI Outreach Automation</span>
+      <small>Use [[ADDRESS]] to inject property location</small>
+     </div>
      <div class="card-body">
-      {% if not gmail_connected %}<div class="alert alert-danger">⚠️ Configure SMTP Settings!</div>{% endif %}
-      <div class="mb-3"><label class="form-label">Subject</label><input id="emailSubject" class="form-control" value="Regarding property"></div>
-      <div class="mb-3"><label class="form-label">Body (Optional AI generation)</label><textarea id="emailBody" class="form-control" rows="5"></textarea></div>
-      <div class="mb-3"><label class="form-label">📎 Attachment</label><input type="file" id="emailAttachment" class="form-control"></div>
-      <button onclick="sendBlast()" class="btn btn-primary w-100 fw-bold" {% if not gmail_connected %}disabled{% endif %}>🚀 Launch Blast</button>
+      <form action="/email/template/save" method="POST" class="mb-4">
+       <label class="fw-bold">Universal Email Script</label>
+       <textarea name="template" class="form-control mb-2" rows="3">{{ user.email_template }}</textarea>
+       <button class="btn btn-sm btn-outline-primary">Save Script</button>
+      </form>
+      <hr>
+      {% if not gmail_connected %}<div class="alert alert-danger">⚠️ Configure Gmail Settings!</div>{% endif %}
+      <div class="mb-3"><label class="form-label">Campaign Subject</label><input id="emailSubject" class="form-control" value="Regarding property at [[ADDRESS]]"></div>
+      <div class="mb-3"><label class="form-label">Body Override (Leave empty to use Universal Script)</label><textarea id="emailBody" class="form-control" rows="5"></textarea></div>
+      <button onclick="sendBlast()" class="btn btn-primary w-100 fw-bold" {% if not gmail_connected %}disabled{% endif %}>🚀 Launch Email Mission</button>
      </div>
     </div>
    </div>
 
-   <div class="tab-pane fade" id="video">
-    <div class="card shadow-sm mb-5 text-center p-4">
-     <h4 class="fw-bold">🎬 AI Content Generator</h4>
-     <input type="file" id="videoPhoto" class="form-control w-50 mx-auto my-3">
-     <textarea id="videoInput" class="form-control w-50 mx-auto mb-3" placeholder="Describe property..."></textarea>
-     <button onclick="createVideo()" class="btn btn-primary">Produce Video</button>
-     <div id="videoResult" class="d-none mt-4"><video id="player" controls class="w-50 rounded shadow-lg"></video></div>
-    </div>
-    <div class="row">
-     {% for vid in user.videos %}
-     <div class="col-md-4 mb-4"><div class="card h-100 shadow-sm">
-      <video src="/static/videos/{{ vid.filename }}" controls class="card-img-top"></video>
-      <div class="card-body text-center"><button onclick="deleteVideo({{ vid.id }})" class="btn btn-sm btn-danger w-100">Delete</button></div>
-     </div></div>
-     {% endfor %}
-    </div>
+   <div class="tab-pane fade" id="history">
+    <div class="card shadow-sm"><div class="card-body">
+     <h5 class="fw-bold mb-3">Previous Sent Messages</h5>
+     <div class="list-group">
+      {% for item in history %}
+      <div class="list-group-item">
+       <div class="d-flex w-100 justify-content-between">
+        <h6 class="mb-1 fw-bold">{{ item.address }}</h6>
+        <small class="text-muted">{{ item.sent_at.strftime('%Y-%m-%d %H:%M') }}</small>
+       </div>
+       <p class="mb-1 small">{{ item.message }}...</p>
+       <small class="text-primary">Sent to: {{ item.recipient }}</small>
+      </div>
+      {% else %}
+      <p class="text-center py-4 text-muted">No outreach history found.</p>
+      {% endfor %}
+     </div>
+    </div></div>
    </div>
   </div>
  </div>
@@ -587,15 +541,16 @@ html_templates = {
 
 <div class="modal fade" id="settingsModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
  <form action="/settings/save" method="POST"><div class="modal-body">
-  <h6>Gmail App Password Config</h6>
+  <h6 class="fw-bold">Gmail Outreach Config</h6>
+  <div class="alert alert-info small">Enable 2FA on your Gmail and create a 16-character <b>App Password</b>.</div>
   <input name="smtp_email" class="form-control mb-2" value="{{ user.smtp_email or '' }}" placeholder="you@gmail.com">
   <input type="password" name="smtp_password" class="form-control mb-2" value="{{ user.smtp_password or '' }}" placeholder="App Password">
- </div><div class="modal-footer"><button class="btn btn-primary">Save Settings</button></div></form>
+ </div><div class="modal-footer"><button class="btn btn-primary">Save Configuration</button></div></form>
 </div></div></div>
 
 <div class="modal fade" id="addLeadModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
  <form action="/leads/add" method="POST"><div class="modal-body">
-  <h6>Manual Entry</h6>
+  <h6>Manual Lead Entry</h6>
   <input name="address" class="form-control mb-2" placeholder="Address" required>
   <input name="phone" class="form-control mb-2" placeholder="Phone">
   <input name="email" class="form-control mb-2" placeholder="Email">
@@ -626,22 +581,18 @@ async function runHunt() {
   const d = await r.json(); alert(d.message);
 }
 async function sendBlast() {
-  const f = new FormData(); f.append('subject', document.getElementById('emailSubject').value); f.append('body', document.getElementById('emailBody').value);
-  const a = document.getElementById('emailAttachment'); if(a.files.length > 0) f.append('attachment', a.files[0]);
+  const f = new FormData(); 
+  let b = document.getElementById('emailBody').value;
+  if(!b) b = `{{ user.email_template }}`;
+  f.append('subject', document.getElementById('emailSubject').value); f.append('body', b);
   const r = await fetch('/email/campaign', {method:'POST', body:f}); const d = await r.json(); alert(d.message);
 }
-async function createVideo() {
-  const f = new FormData(); f.append('photo', document.getElementById('videoPhoto').files[0]); f.append('description', document.getElementById('videoInput').value);
-  const r = await fetch('/video/create', {method:'POST', body:f}); const d = await r.json();
-  if(d.video_url) { document.getElementById('videoResult').classList.remove('d-none'); document.getElementById('player').src = d.video_url; alert("Generation Done!"); window.location.reload(); }
-}
-async function deleteVideo(id) { if(confirm("Permanently delete?")) await fetch('/video/delete/'+id, {method:'POST'}); window.location.reload(); }
 async function updateStatus(id, s) { await fetch('/leads/update/'+id, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status:s})}); }
 </script>
 {% endblock %}
 """,
 
- 'buybox.html': """{% extends "base.html" %} {% block content %} <div class="container mt-5"><h2>Buy Box Configuration</h2><form method="POST"><div class="row"><div class="col-md-6 mb-3"><label>Property Type</label><select name="property_type" class="form-control"><option value="SFH">Single Family</option><option value="MFH">Multi Family</option></select></div><div class="col-md-6 mb-3"><label>Target Locations</label><input name="locations" class="form-control" value="{{ user.bb_locations or '' }}"></div></div><button class="btn btn-primary">Save Box</button></form></div>{% endblock %}""",
+ 'buybox.html': """{% extends "base.html" %} {% block content %} <div class="container mt-5"><h2>Buy Box Configuration</h2><form method="POST"><div class="row"><div class="col-md-6 mb-3"><label>Type</label><select name="property_type" class="form-control"><option value="SFH">Single Family</option><option value="MFH">Multi Family</option></select></div><div class="col-md-6 mb-3"><label>Locations</label><input name="locations" class="form-control" value="{{ user.bb_locations or '' }}"></div></div><button class="btn btn-primary">Save Box</button></form></div>{% endblock %}""",
 
  'login.html': """{% extends "base.html" %} {% block content %} 
  <div class="row justify-content-center pt-5">

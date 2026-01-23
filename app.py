@@ -33,44 +33,37 @@ from gtts import gTTS
 # ---------------------------------------------------------
 # 0. LIVE SYSTEM TERMINAL ENGINE (MEMORY BUFFER)
 # ---------------------------------------------------------
-# REMODELLED: The SyntaxError caused by empty f-string braces {} is fixed.
-# Using .format() ensures maximum compatibility with Gunicorn/Render.
+# REMODELLED: Using manual indexing {0} {1} to stop Render crashes.
 # ---------------------------------------------------------
 SYSTEM_LOGS = []
 
 def log_activity(message):
     """
-    Pushes logs to the frontend terminal and server console.
-    Standard Remodel: Using .format() to prevent f-string empty expression errors.
+    Pushes logs to the memory buffer and console.
+    Fixes the 'manual field specification' error by using indexed placeholders.
     """
     try:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        # ! LINE 53 REMODEL: EXPLICIT VARIABLE PASSING VIA FORMAT !
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # SURGICAL INDEXED FORMATTING:
         log_template = "[{0}] {1}"
         entry = log_template.format(timestamp, message)
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         
         print(entry)
         SYSTEM_LOGS.insert(0, entry)
-        # Prevents memory leakage by capping log count at 600
         if len(SYSTEM_LOGS) > 600: 
             SYSTEM_LOGS.pop()
     except Exception as e:
-        print("Internal Log Engine Failure: {0}".format(str(e)))
+        print("Logger Failure: {0}".format(str(e)))
 
 # ---------------------------------------------------------
 # 1. APPLICATION CONFIGURATION & SECRETS
 # ---------------------------------------------------------
 app = Flask(__name__)
 
-# SYSTEM SECURITY
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'titan_intel_v1_industrial_standard_99')
-app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024 # Supports large media uploads
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'titan_industrial_v1_auth_protocol_2024')
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024 
 
-# DATABASE PERSISTENCE (Support for Render Persistent Storage)
+# Database Persistence for Render Persistent Disks
 if os.path.exists('/var/data'):
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////var/data/titan.db'
 else:
@@ -78,7 +71,7 @@ else:
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# FOLDER HIERARCHY
+# Asset Folders
 UPLOAD_FOLDER = 'static/uploads'
 VIDEO_FOLDER = 'static/videos'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -94,18 +87,18 @@ login_manager.login_view = 'login'
 ADMIN_EMAIL = "leewaits836@gmail.com"
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
-# Initialize Groq AI (Llama 3.3)
+# Initialize AI
 try:
     groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 except:
     groq_client = None
-    log_activity("⚠️ AI WARNING: GROQ_API_KEY missing. AI features disabled.")
+    log_activity("⚠️ AI WARNING: GROQ_API_KEY missing. AI generation disabled.")
 
 # Search Engine Credentials
 SEARCH_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
 SEARCH_CX = os.environ.get("GOOGLE_SEARCH_CX")
 
-# EXTENDED KEYWORD BANK FOR INDUSTRIAL LEAD VOLUME
+# INDUSTRIAL KEYWORD BANK
 KEYWORD_BANK = [
     "must sell", "motivated seller", "cash only", "divorce", "probate", "urgent", 
     "pre-foreclosure", "fixer upper", "needs work", "handyman special", "fire damage", 
@@ -114,7 +107,7 @@ KEYWORD_BANK = [
     "relocating", "job transfer", "liquidate assets", "estate sale", "needs repairs",
     "tlc required", "bring all offers", "price reduced", "behind on payments",
     "Creative financing", "squatter issue", "code violation", "inherited house",
-    "back on market", "wholesale", "off-market deal", "tired landlord"
+    "back on market", "wholesale house", "tired landlord", "quick close cash"
 ]
 
 # VIDEO ENGINE PRE-CHECK
@@ -124,10 +117,10 @@ try:
     from moviepy.editor import ImageClip, AudioFileClip
     HAS_FFMPEG = True
 except Exception:
-    log_activity("⚠️ FFMPEG WARNING: Rendering disabled. Using placeholders.")
+    log_activity("⚠️ FFMPEG WARNING: Rendering disabled. Using placeholder data.")
 
 # ---------------------------------------------------------
-# 2. DATABASE MODELS (INDUSTRIAL STANDARD)
+# 2. DATABASE MODELS
 # ---------------------------------------------------------
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
@@ -138,17 +131,8 @@ class User(UserMixin, db.Model):
     smtp_password = db.Column(db.String(150), nullable=True)  
     subscription_status = db.Column(db.String(50), default='free') 
     subscription_end = db.Column(db.DateTime, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # Buy Box Fields
-    bb_property_type = db.Column(db.String(50))
-    bb_locations = db.Column(db.String(255))
-    bb_min_price = db.Column(db.Integer)
-    bb_max_price = db.Column(db.Integer)
-    bb_strategy = db.Column(db.String(50))
-    bb_funding = db.Column(db.String(50)) 
-    bb_timeline = db.Column(db.String(50))
-
+    trial_active = db.Column(db.Boolean, default=False)
+    trial_start = db.Column(db.DateTime, nullable=True)
     videos = db.relationship('Video', backref='owner', lazy=True)
 
 class Lead(db.Model):
@@ -158,17 +142,11 @@ class Lead(db.Model):
     address = db.Column(db.String(255), nullable=False)
     phone = db.Column(db.String(50), nullable=True)
     email = db.Column(db.String(100), nullable=True)
-    asking_price = db.Column(db.String(50), nullable=True)
     status = db.Column(db.String(50), default="New") 
     source = db.Column(db.String(50), default="Manual")
     link = db.Column(db.String(500)) 
     emailed_count = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # TitanFinance Metics
-    arv_estimate = db.Column(db.Integer)
-    repair_estimate = db.Column(db.Integer)
-    max_allowable_offer = db.Column(db.Integer)
 
 class Video(db.Model):
     __tablename__ = 'videos'
@@ -190,13 +168,13 @@ with app.app_context():
 # ---------------------------------------------------------
 def task_scraper(app_obj, user_id, city, state):
     """
-    ENGINE: VICIOUS LEAD HUNTER.
-    - REMODEL: Query logic now uses combinatorial site/city/keyword logic.
-    - SCALE: Deep Pagination loop (1-100) pulls thousands of leads.
-    - STEALTH: Mandatory 5-15s randomized sleep between pages.
+    ENGINE: INDUSTRIAL LEAD HUNTER.
+    - Deep Pagination (start=1 to 100).
+    - Randomized Human behavior delay (5-15s).
+    - Combinatorial logic for thousands of results.
     """
     with app_obj.app_context():
-        log_activity("🚀 MISSION STARTED: Hunting in {0}, {1}".format(city, state))
+        log_activity("🚀 MISSION STARTED: Hunting leads in {0}, {1}".format(city, state))
         
         if not SEARCH_API_KEY or not SEARCH_CX:
             log_activity("❌ API ERROR: Google Search Credentials missing.")
@@ -209,32 +187,32 @@ def task_scraper(app_obj, user_id, city, state):
             return
 
         target_sites = ["fsbo.com", "facebook.com/marketplace", "zillow.com/homedetails", "realtor.com", "craigslist.org"]
-        # Cycle through random keywords to cast the widest net
+        # Rotate 12 keywords per scan to cast widest net
         keywords = random.sample(KEYWORD_BANK, 12) 
         total_leads_added = 0
         
         for site in target_sites:
             log_activity("🔎 Scanning Domain: {0}".format(site))
             for kw in keywords:
-                # INDUSTRIAL PAGINATION LOOP: 10 pages per combinatorial search
+                # INDUSTRIAL PAGINATION: Pull 10 pages per combinatorial search (100 leads)
                 for start_idx in range(1, 101, 10): 
                     try:
-                        # THE REAL FIX: Proper string construction using site, city, and kw
+                        # THE REAL FIX: Construction of query using indexed formatting
                         query_string = 'site:{0} "{1}" "{2}" {}'.format(site, city, state, kw)
                         res = service.cse().list(q=query_string, cx=SEARCH_CX, num=10, start=start_idx).execute()
                         
-                        if 'items' not in res: break 
+                        if 'items' not in res: 
+                            break 
 
                         for item in res.get('items', []):
                             snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
                             link = item.get('link', '#')
                             
-                            # INDUSTRIAL REGEX ENGINE
+                            # INDUSTRIAL REGEX DATA EXTRACTION
                             phones = re.findall(r'\(?\d{}\)?[-.\s]?\d{}[-.\s]?\d{}', snippet)
                             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
                             
                             if phones or emails:
-                                # DEDUPLICATION: Verify lead doesn't exist for this specific user
                                 if not Lead.query.filter_by(link=link, submitter_id=user_id).first():
                                     found_phone = phones[0] if phones else "None"
                                     found_email = emails[0] if emails else "None"
@@ -250,17 +228,16 @@ def task_scraper(app_obj, user_id, city, state):
                                     )
                                     db.session.add(lead)
                                     total_leads_added += 1
-                                    log_activity("✅ FOUND DEAL: {0}".format(lead.address[:25]))
+                                    log_activity("✅ FOUND LEAD: {0}".format(lead.address[:25]))
                         
                         db.session.commit()
                         
-                        # HUMAN BEHAVIOR EMULATION: Mandatory 5-15s Randomized Pause
-                        nap_time = random.uniform(5, 15)
-                        time.sleep(nap_time) 
+                        # HUMAN BEHAVIOR EMULATION: Mandatory randomized 5-15s
+                        time.sleep(random.uniform(5, 15)) 
 
                     except HttpError as e:
                         if e.resp.status == 429:
-                            log_activity("⚠️ RATE LIMIT: Waiting for reset (60s)...")
+                            log_activity("⚠️ RATE LIMIT reached. Waiting 60s for reset...")
                             time.sleep(60); continue
                         break
                     except Exception as e:
@@ -272,34 +249,32 @@ def task_scraper(app_obj, user_id, city, state):
 def task_emailer(app_obj, user_id, subject, body, attach_path):
     """
     ENGINE: OUTREACH AUTOMATION MACHINE.
-    - AI-personalization loop (Groq).
-    - PDF attachment support.
-    - STEALTH: Mandatory 5-15s human behavior sleep between leads.
+    - mass sends via user SMTP settings.
+    - AI Content personalization via Groq AI.
+    - Mandatory 5-15s randomized behavior delay.
     """
     with app_obj.app_context():
         user = User.query.get(user_id)
         if not user.smtp_email or not user.smtp_password:
-            log_activity("❌ SMTP ERROR: Gmail App Password missing.")
+            log_activity("❌ SMTP ERROR: Gmail credentials missing.")
             return
 
-        # Target leads with email addresses
         leads = Lead.query.filter(Lead.submitter_id == user_id, Lead.email.contains('@')).all()
-        log_activity("📧 BLAST STARTED: Targeting {0} leads.".format(len(leads)))
+        log_activity("📧 BLAST STARTING: Targeting {0} leads.".format(len(leads)))
         
         try:
             server = smtplib.SMTP("smtp.gmail.com", 587)
             server.starttls()
             server.login(user.smtp_email, user.smtp_password)
-            log_activity("✅ SMTP LOGIN: Google account authenticated.")
+            log_activity("✅ SMTP LOGIN: SUCCESS.")
             
             sent_count = 0
             for lead in leads:
                 try:
-                    # AI INTEGRATION: Personalized messages via Groq
                     final_body = body
                     if (not body or len(body) < 10) and groq_client:
                         chat = groq_client.chat.completions.create(
-                            messages=[{"role": "user", "content": "Write a professional investor short cash offer email for {0}. Direct and concise.".format(lead.address)}],
+                            messages=[{"role": "user", "content": "Write a short cash offer investor email for {0}.".format(lead.address)}],
                             model="llama-3.3-70b-versatile"
                         )
                         final_body = chat.choices[0].message.content
@@ -324,11 +299,11 @@ def task_emailer(app_obj, user_id, subject, body, attach_path):
                     sent_count += 1
                     log_activity("📨 SENT: {0}".format(lead.email))
                     
-                    # ANTI-SPAM: Mandatory randomized sleep 5-15s
+                    # ANTI-SPAM: Human behavior 5-15s sleep
                     time.sleep(random.uniform(5, 15)) 
                     
                 except Exception as e:
-                    log_activity("⚠️ SMTP FAILED ({0}): {1}".format(lead.email, str(e)))
+                    log_activity("⚠️ SEND FAILURE ({0}): {1}".format(lead.email, str(e)))
             
             server.quit()
             log_activity("🏁 BLAST COMPLETE: {0} deliveries confirmed.".format(sent_count))
@@ -339,7 +314,7 @@ def task_emailer(app_obj, user_id, subject, body, attach_path):
     if attach_path and os.path.exists(attach_path): os.remove(attach_path)
 
 # ---------------------------------------------------------
-# 4. FLASK WEB INTERFACE ROUTES (RETAINED)
+# 4. SYSTEM INTERFACE ROUTES (RETAINED)
 # ---------------------------------------------------------
 @app.route('/logs')
 @login_required
@@ -367,7 +342,7 @@ def dashboard():
 def hunt_leads():
     city, state = request.form.get('city'), request.form.get('state')
     threading.Thread(target=task_scraper, args=(app, current_user.id, city, state)).start()
-    return jsonify({'message': "🚀 Mission launched for {0}. Watch terminal.".format(city)})
+    return jsonify({'message': "🚀 Industrial scan started for {0}. Watch terminal.".format(city)})
 
 @app.route('/email/campaign', methods=['POST'])
 @login_required
@@ -379,19 +354,19 @@ def email_campaign():
         path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(attachment.filename))
         attachment.save(path)
     threading.Thread(target=task_emailer, args=(app, current_user.id, subject, body, path)).start()
-    return jsonify({'message': "🚀 Bulk outreach engine running."})
+    return jsonify({'message': "🚀 Mass outreach launched with human stealth behavior."})
 
 @app.route('/video/create', methods=['POST'])
 @login_required
 def create_video():
     desc = request.form.get('description'); photo = request.files.get('photo')
-    log_activity("🎬 AI VIDEO: INITIALIZING GENERATION...")
+    log_activity("🎬 AI VIDEO: PROCESSING GENERATION...")
     try:
         filename = secure_filename("img_{0}.jpg".format(int(time.time())))
         img_path = os.path.join(UPLOAD_FOLDER, filename); photo.save(img_path)
-        log_activity("... Writing AI Script")
+        log_activity("... Writing Script")
         chat = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": "Write a 15s real estate viral script."}, {"role": "user", "content": desc}], 
+            messages=[{"role": "system", "content": "Write a 15s real estate script."}, {"role": "user", "content": desc}], 
             model="llama-3.3-70b-versatile"
         )
         script = chat.choices[0].message.content
@@ -405,27 +380,13 @@ def create_video():
             video_clip.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
         else:
             log_activity("⚠️ VIDEO: Saving simulation placeholder data.")
-            with open(out_path, 'wb') as f: f.write(b'Render_Simulation')
+            with open(out_path, 'wb') as f: f.write(b'Render_Fallback_Data')
         new_video = Video(user_id=current_user.id, filename=vid_name, description=desc)
         db.session.add(new_video); db.session.commit()
-        log_activity("✅ VIDEO SUCCESS: Production finished.")
+        log_activity("✅ VIDEO SUCCESS: Production complete.")
         return jsonify({'video_url': "/static/videos/{0}".format(vid_name), 'message': "Video Produced!"})
     except Exception as e: 
         log_activity("❌ VIDEO FAIL: {0}".format(str(e))); return jsonify({'error': str(e)}), 500
-
-@app.route('/buy_box', methods=['GET', 'POST'])
-@login_required
-def buy_box():
-    if request.method == 'POST':
-        current_user.bb_property_type = request.form.get('property_type')
-        current_user.bb_locations = request.form.get('locations')
-        current_user.bb_min_price = request.form.get('min_price')
-        current_user.bb_max_price = request.form.get('max_price')
-        current_user.bb_strategy = request.form.get('strategy')
-        current_user.bb_funding = request.form.get('funding')
-        current_user.bb_timeline = request.form.get('timeline')
-        db.session.commit(); flash('Buy Box Updated!', 'success')
-    return render_template('buybox.html', user=current_user)
 
 @app.route('/settings/save', methods=['POST'])
 @login_required
@@ -459,7 +420,7 @@ def export_leads():
     leads = Lead.query.filter_by(submitter_id=current_user.id).all()
     for l in leads: cw.writerow([l.status, l.address, l.phone, l.email, l.source, l.link])
     output = Response(si.getvalue(), mimetype='text/csv')
-    output.headers["Content-Disposition"] = "attachment; filename=titan_leads.csv"; return output
+    output.headers["Content-Disposition"] = "attachment; filename=leads.csv"; return output
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -467,7 +428,7 @@ def login():
         user = User.query.filter_by(email=request.form['email']).first()
         if user and (user.password == request.form['password'] or check_password_hash(user.password, request.form['password'])):
             login_user(user); return redirect(url_for('dashboard'))
-        flash('Invalid login.', 'error')
+        flash('Authentication failed.', 'error')
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -494,7 +455,7 @@ def index(): return redirect(url_for('login'))
 # 5. HTML DESIGN TEMPLATES (INTEGRATED)
 # ---------------------------------------------------------
 html_templates = {
- 'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TITAN | Lead Intelligence</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"><style>body { background-color: #f8f9fa; } .terminal { background: #000; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; height: 250px; overflow-y: scroll; border-radius: 8px; border: 1px solid #333; font-size: 13px; line-height: 1.5; } .card { border: none; border-radius: 12px; } </style></head><body><nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm"><div class="container"><a class="navbar-brand fw-bold" href="/">TITAN <span class="text-primary">INTEL</span></a><div class="collapse navbar-collapse"><ul class="navbar-nav ms-auto align-items-center"><li class="nav-item"><a class="btn btn-outline-warning btn-sm me-3" href="/sell">Seller Portal</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link" href="/buy_box">Buy Box</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show shadow-sm">{{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div><footer class="text-center text-muted py-5 small">&copy; 2024 Titan Intel. Build 1.3.0</footer></body></html>""",
+ 'base.html': """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TITAN | Lead Intelligence</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"><style>body { background-color: #f8f9fa; } .terminal { background: #000; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; height: 250px; overflow-y: scroll; border-radius: 8px; border: 1px solid #333; font-size: 13px; line-height: 1.5; } .card { border: none; border-radius: 12px; } </style></head><body><nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm"><div class="container"><a class="navbar-brand fw-bold" href="/">TITAN <span class="text-primary">INTEL</span></a><div class="collapse navbar-collapse"><ul class="navbar-nav ms-auto align-items-center"><li class="nav-item"><a class="btn btn-outline-warning btn-sm me-3" href="/sell">Seller Portal</a></li>{% if current_user.is_authenticated %}<li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li><li class="nav-item"><a class="nav-link text-danger" href="/logout">Logout</a></li>{% else %}<li class="nav-item"><a class="nav-link" href="/login">Login</a></li>{% endif %}</ul></div></div></nav><div class="container mt-4">{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show shadow-sm">{{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}{% endif %}{% endwith %}{% block content %}{% endblock %}</div><footer class="text-center text-muted py-5 small">&copy; 2024 Titan Intel. Build 1.4.0</footer></body></html>""",
 
  'dashboard.html': """
 {% extends "base.html" %}
@@ -553,8 +514,7 @@ html_templates = {
    
    <div class="tab-pane fade" id="hunter">
     <div class="card bg-dark text-white p-5 text-center shadow-lg">
-     <h2 class="fw-bold mb-3">🕵️ Deep Web Hunter Scraper Engine</h2>
-     <p class="text-muted">Combinatorial logic extraction from FSBO, Zillow, and Craigslist.</p>
+     <h2 class="fw-bold mb-3">🕵️ Industrial Lead Scraper Engine</h2>
      <div class="row justify-content-center mt-4 g-3">
       <div class="col-md-3"><select id="huntState" class="form-select" onchange="loadCities()"><option value="">State</option></select></div>
       <div class="col-md-3"><select id="huntCity" class="form-select"><option value="">City</option></select></div>
@@ -598,7 +558,7 @@ html_templates = {
 
 <div class="modal fade" id="settingsModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
  <form action="/settings/save" method="POST"><div class="modal-body">
-  <h6>Gmail App Password Config</h6>
+  <h6>Gmail App Password Configuration</h6>
   <input name="smtp_email" class="form-control mb-2" value="{{ user.smtp_email or '' }}" placeholder="you@gmail.com">
   <input type="password" name="smtp_password" class="form-control mb-2" value="{{ user.smtp_password or '' }}" placeholder="App Password">
  </div><div class="modal-footer"><button class="btn btn-primary">Save Settings</button></div></form>
@@ -615,7 +575,7 @@ html_templates = {
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-const usData = { "AL": ["Birmingham"], "AZ": ["Phoenix"], "CA": ["Los Angeles", "San Diego"], "FL": ["Miami", "Tampa"], "TX": ["Houston", "Dallas"] };
+const usData = {"AL":["Birmingham","Montgomery","Mobile"],"AK":["Anchorage","Juneau","Fairbanks"],"AZ":["Phoenix","Tucson","Scottsdale"],"AR":["Little Rock","Fort Smith"],"CA":["Los Angeles","San Diego","San Francisco","Sacramento"],"CO":["Denver","Colorado Springs"],"CT":["Hartford","Bridgeport"],"DE":["Wilmington","Dover"],"FL":["Miami","Tampa","Orlando","Jacksonville"],"GA":["Atlanta","Savannah"],"HI":["Honolulu"],"ID":["Boise"],"IL":["Chicago","Springfield"],"IN":["Indianapolis"],"IA":["Des Moines"],"KS":["Wichita","Topeka"],"KY":["Louisville","Lexington"],"LA":["New Orleans","Baton Rouge"],"ME":["Portland","Augusta"],"MD":["Baltimore","Annapolis"],"MA":["Boston","Worcester"],"MI":["Detroit","Grand Rapids"],"MN":["Minneapolis","St. Paul"],"MS":["Jackson","Gulfport"],"MO":["St. Louis","Kansas City"],"MT":["Billings","Helena"],"NE":["Omaha","Lincoln"],"NV":["Las Vegas","Reno"],"NH":["Manchester","Concord"],"NJ":["Newark","Jersey City"],"NM":["Albuquerque","Santa Fe"],"NY":["New York City","Buffalo","Albany"],"NC":["Charlotte","Raleigh"],"ND":["Fargo","Bismarck"],"OH":["Columbus","Cleveland","Cincinnati"],"OK":["Oklahoma City","Tulsa"],"OR":["Portland","Salem"],"PA":["Philadelphia","Pittsburgh","Harrisburg"],"RI":["Providence"],"SC":["Charleston","Columbia"],"SD":["Sioux Falls","Pierre"],"TN":["Nashville","Memphis"],"TX":["Houston","Dallas","Austin","San Antonio"],"UT":["Salt Lake City"],"VT":["Burlington","Montpelier"],"VA":["Virginia Beach","Richmond"],"WA":["Seattle","Spokane"],"WV":["Charleston"],"WI":["Milwaukee","Madison"],"WY":["Cheyenne"]};
 window.onload = function() {
   const s = document.getElementById("huntState");
   for (let st in usData) { let o = document.createElement("option"); o.value = st; o.innerText = st; s.appendChild(o); }
@@ -652,13 +612,31 @@ async function updateStatus(id, s) { await fetch('/leads/update/'+id, {method:'P
 {% endblock %}
 """,
 
- 'buybox.html': """{% extends "base.html" %} {% block content %} <div class="container mt-5"><h2>Buy Box Settings</h2><form method="POST"><div class="row"><div class="col-md-6 mb-3"><label>Type</label><select name="property_type" class="form-control"><option value="SFH">Single Family</option><option value="MFH">Multi Family</option></select></div><div class="col-md-6 mb-3"><label>Locations</label><input name="locations" class="form-control" value="{{ user.bb_locations or '' }}"></div></div><button class="btn btn-primary">Save Box</button></form></div>{% endblock %}""",
-
- 'login.html': """{% extends "base.html" %} {% block content %} <div class="row justify-content-center pt-5"><div class="col-md-4 card p-5 shadow-lg"><h3 class="text-center fw-bold mb-4">Login</h3><form method="POST"><div class="mb-3"><input name="email" class="form-control" placeholder="Email Address"></div><div class="mb-4"><input type="password" name="password" class="form-control" placeholder="Password"></div><button class="btn btn-dark w-100 fw-bold py-2">Login</button></form><div class="text-center mt-3"><a href="/register" class="small">New account?</a></div></div></div>{% endblock %}""",
+ 'login.html': """{% extends "base.html" %} {% block content %} 
+ <div class="row justify-content-center pt-5">
+  <div class="col-md-10">
+   <div class="card shadow-lg border-0 mb-5 bg-warning text-dark">
+    <div class="card-body p-5 text-center">
+     <h1 class="fw-bold display-4">🏠 SELL YOUR PROPERTY NOW</h1>
+     <p class="lead fw-bold">Professional real estate investors waiting for your address.</p>
+     <a href="/sell" class="btn btn-dark btn-xl fw-bold px-5 py-3 shadow">GET AN INSTANT CASH OFFER</a>
+    </div>
+   </div>
+  </div>
+  <div class="col-md-4">
+   <div class="card p-5 shadow-lg border-0">
+    <h3 class="text-center fw-bold mb-4">Investor Login</h3>
+    <form method="POST"><div class="mb-3"><input name="email" class="form-control" placeholder="Email Address"></div>
+    <div class="mb-4"><input type="password" name="password" class="form-control" placeholder="Password"></div>
+    <button class="btn btn-primary w-100 fw-bold py-2">Login</button></form>
+    <div class="text-center mt-3"><a href="/register" class="small">New account</a></div>
+   </div>
+  </div>
+ </div>{% endblock %}""",
 
  'register.html': """{% extends "base.html" %} {% block content %} <div class="row justify-content-center pt-5"><div class="col-md-4 card p-5 shadow-lg"><h3 class="text-center fw-bold mb-4">Join Titan</h3><form method="POST"><div class="mb-3"><input name="email" class="form-control" placeholder="Email Address"></div><div class="mb-4"><input type="password" name="password" class="form-control" placeholder="Password"></div><button class="btn btn-success w-100 fw-bold py-2">Sign Up</button></form></div></div>{% endblock %}""",
 
- 'sell.html': """{% extends "base.html" %} {% block content %} <div class="row justify-content-center py-5 text-center"><div class="col-md-8"><h1>Cash Offer Engine</h1><div class="card p-5 shadow-lg mt-4 border-0"><form method="POST"><input class="form-control form-control-lg mb-3" placeholder="Address" required><input class="form-control form-control-lg mb-3" placeholder="Phone" required><button class="btn btn-warning btn-lg w-100 fw-bold py-3 shadow">SUBMIT</button></form></div></div></div>{% endblock %}"""
+ 'sell.html': """{% extends "base.html" %} {% block content %} <div class="row justify-content-center py-5 text-center"><div class="col-md-8"><h1>Instant Offer Engine</h1><div class="card p-5 shadow-lg mt-4 border-0"><form method="POST"><input class="form-control form-control-lg mb-3" placeholder="Full Property Address" required><input class="form-control form-control-lg mb-3" placeholder="Phone Number" required><button class="btn btn-warning btn-lg w-100 fw-bold py-3 shadow">SUBMIT FOR OFFER</button></form></div></div></div>{% endblock %}"""
 }
 
 # ---------------------------------------------------------
@@ -668,5 +646,4 @@ if not os.path.exists('templates'): os.makedirs('templates')
 for filename, content in html_templates.items():
     with open(f'templates/{filename}', 'w') as f: f.write(content.strip())
 
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+if __name__ == "__main__": app.run(debug=True, port=5000)

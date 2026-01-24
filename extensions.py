@@ -1,4 +1,7 @@
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager
 
-# This initializes the database variable separately to prevent loops
+# Industrial standard initialization to prevent circular dependencies
 db = SQLAlchemy()
+login_manager = LoginManager()
+login_manager.login_view = 'login'

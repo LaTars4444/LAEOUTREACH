@@ -1,4 +1,3 @@
-
 import os
 import random
 import re
@@ -11,110 +10,135 @@ from extensions import db
 from models import Lead, OutreachLog, User
 from utils import human_stealth_delay
 
-# Production Log Buffer
+# Global Production Memory Log Buffer
 SYSTEM_LOGS = []
 
 def log_activity(message):
-    """ Surgical Indexed Formatting to prevent Render crashes. """
+    """
+    INDUSTRIAL LOGGING ENGINE.
+    SURGICAL FIX: Uses Manual Explicit Indexing {0} to prevent Render crashes.
+    """
     try:
         timestamp = time.strftime("%H:%M:%S")
-        log_format = "[{0}] {1}"
-        entry = log_format.format(timestamp, message)
+        log_template = "[{0}] {1}"
+        entry = log_template.format(timestamp, message)
         print(entry)
         SYSTEM_LOGS.insert(0, entry)
-        if len(SYSTEM_LOGS) > 3000: SYSTEM_LOGS.pop()
+        if len(SYSTEM_LOGS) > 5000: SYSTEM_LOGS.pop()
     except: pass
 
-def task_scraper(app, user_id, city, state, api_key, cx):
+def vicious_hunter(app, user_id, city, state, api_key, cx):
     """
-    INDUSTRIAL LEAD HUNTER.
-    Optimized for 1,000+ Site CX Clusters.
+    ENTERPRISE SCRAPER CORE.
+    Optimized for searching across a massive 1,000-site Google CX Network.
+    Logic: Combinatorial search query generation with deep pagination loops.
     """
     with app.app_context():
-        log_activity("🚀 MISSION STARTED: Lead Extraction in {0}, {1}".format(city, state))
+        start_log = "🚀 MISSION STARTED: Hunting leads in {0}, {1}".format(city, state)
+        log_activity(start_log)
         try:
             service = build("customsearch", "v1", developerKey=api_key)
-            keywords = ["must sell", "motivated seller", "cash only", "inherited property", "probate", "divorce"]
+            keywords = ["must sell", "cash buyer", "motivated seller", "probate deal", "divorce sale", "fixer upper"]
             total_added = 0
             
+            # Combinatorial Query Rotation
             for kw in keywords:
-                for start in range(1, 101, 10): # 100 deep results per combinatorial
-                    query_format = '"{0}" "{1}" {2}'
-                    q = query_format.format(city, state, kw)
+                # INDUSTRIAL PAGINATION: 10 pages per combinatorial (100 leads per keyword)
+                for start in range(1, 101, 10):
+                    query_template = '"{0}" "{1}" {2}'
+                    q = query_template.format(city, state, kw)
                     
-                    res = service.cse().list(q=q, cx=cx, num=10, start=start).execute()
-                    if 'items' not in res: break
+                    response = service.cse().list(q=q, cx=cx, num=10, start=start).execute()
+                    if 'items' not in response: break
 
-                    for item in res.get('items', []):
+                    for item in response.get('items', []):
                         snippet = (item.get('snippet', '') + " " + item.get('title', '')).lower()
                         link = item.get('link', '#')
                         
+                        # INDUSTRIAL REGEX DATA EXTRACTION PIPELINE
                         phones = re.findall(r'\(?\d{}\)?[-.\s]?\d{}[-.\s]?\d{}', snippet)
                         emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
                         
                         if phones or emails:
                             if not Lead.query.filter_by(link=link, submitter_id=user_id).first():
-                                # Property Name Heuristic
-                                owner_name = "Property Owner"
-                                name_find = re.search(r'by\s+([a-zA-Z]+)', snippet)
-                                if name_find: owner_name = name_find.group(1).capitalize()
+                                # Owner Identification Heuristics
+                                owner_label = "Property Owner"
+                                name_check = re.search(r'by\s+([a-zA-Z]+)', snippet)
+                                if name_check: owner_label = name_check.group(1).capitalize()
 
-                                lead = Lead(
+                                industrial_lead = Lead(
                                     submitter_id=user_id,
                                     address=item.get('title')[:100],
-                                    name=owner_name,
+                                    name=owner_label,
                                     phone=phones[0] if phones else "None",
                                     email=emails[0] if emails else "None",
-                                    source="Industrial Network",
+                                    source="Enterprise Network",
                                     link=link
                                 )
-                                db.session.add(lead)
+                                db.session.add(industrial_lead)
                                 total_added += 1
-                                log_activity("✅ HARVESTED: {0}".format(lead.address[:25]))
+                                harvest_log = "✅ HARVESTED: {0}".format(industrial_lead.address[:25])
+                                log_activity(harvest_log)
                     
                     db.session.commit()
-                    human_stealth_delay() 
+                    human_stealth_delay() # Mandatory behavioral jitter
             
-            log_activity("🏁 MISSION COMPLETE: indexed {0} leads.".format(total_added))
+            final_log = "🏁 MISSION COMPLETE: {0} leads indexed.".format(total_added)
+            log_activity(final_log)
         except Exception as e:
             log_activity("⚠️ SCRAPE FAULT: {0}".format(str(e)))
 
-def task_emailer(app, user_id, subject, body, groq_client):
-    """ INDUSTRIAL OUTREACH MACHINE - UNIVERSAL SCRIPT LOGIC """
+def outreach_machine(app, user_id, subject, body, groq_client):
+    """
+    INDUSTRIAL OUTREACH MACHINE.
+    Functional logic for Universal scripts and Dynamic Property Injection.
+    """
     with app.app_context():
         user = User.query.get(user_id)
         leads = Lead.query.filter(Lead.submitter_id == user_id, Lead.email.contains('@')).all()
-        log_activity("📧 BLAST STARTING: Targeting {0} leads.".format(len(leads)))
+        log_activity("📧 BLAST STARTING: Targeting {0} potential sellers.".format(len(leads)))
         
         try:
             server = smtplib.SMTP("smtp.gmail.com", 587)
-            server.starttls(); server.login(user.smtp_email, user.smtp_password)
+            server.starttls()
+            server.login(user.smtp_email, user.smtp_password)
             
             for lead in leads:
                 try:
-                    # Dynamic Injection logic
-                    msg_body = body if body and len(body) > 10 else user.email_template
-                    msg_body = msg_body.replace("[[ADDRESS]]", lead.address).replace("[[NAME]]", lead.name)
+                    # DYNAMIC UNIVERSAL SCRIPT INJECTION
+                    # Logic swaps industrial tags [[ADDRESS]] and [[NAME]] with real-time database values
+                    final_msg = body if body and len(body) > 10 else user.email_template
+                    final_msg = final_msg.replace("[[ADDRESS]]", lead.address)
+                    final_msg = final_msg.replace("[[NAME]]", lead.name)
                     
-                    # AI personalization override via Groq
-                    if groq_client and len(msg_body) < 15:
+                    # AI SMART OVERRIDE (GROQ LLAMA 3.3)
+                    if groq_client and len(final_msg) < 15:
                         chat = groq_client.chat.completions.create(
                             messages=[{"role": "user", "content": "Write a short cash buyer email for {0}.".format(lead.address)}],
                             model="llama-3.3-70b-versatile"
                         )
-                        msg_body = chat.choices[0].message.content
+                        final_msg = chat.choices[0].message.content
 
-                    msg = MIMEMultipart(); msg['From'] = user.smtp_email; msg['To'] = lead.email; msg['Subject'] = subject.replace("[[ADDRESS]]", lead.address)
-                    msg.attach(MIMEText(msg_body, 'plain')); server.send_message(msg)
+                    msg = MIMEMultipart()
+                    msg['From'] = user.smtp_email
+                    msg['To'] = lead.email
+                    msg['Subject'] = subject.replace("[[ADDRESS]]", lead.address)
+                    msg.attach(MIMEText(final_msg, 'plain'))
                     
-                    # Log History
-                    out = OutreachLog(user_id=user_id, recipient_email=lead.email, address=lead.address, message=msg_body[:250])
-                    db.session.add(out); lead.emailed_count += 1; lead.status = "Contacted"; db.session.commit()
+                    server.send_message(msg)
+                    
+                    # PERSISTENT HISTORY LOGGING (Solves 500 error)
+                    # We ensure the address is logged for visibility pane.
+                    outlog = OutreachLog(user_id=user_id, recipient_email=lead.email, address=lead.address, message=final_msg[:250])
+                    db.session.add(outlog)
+                    lead.emailed_count += 1; lead.status = "Contacted"; db.session.commit()
                     
                     log_activity("📨 SENT: {0}".format(lead.email))
                     human_stealth_delay()
                 except Exception as e:
                     log_activity("⚠️ SMTP FAIL ({0}): {1}".format(lead.email, str(e)))
-            server.quit(); log_activity("🏁 BLAST COMPLETE.")
+            
+            server.quit()
+            log_activity("🏁 BLAST MISSION COMPLETE.")
         except Exception as e:
             log_activity("❌ SMTP CRITICAL ERROR: {0}".format(str(e)))

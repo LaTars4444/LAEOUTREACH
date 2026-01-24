@@ -1,9 +1,4 @@
-"""
-TITAN INDUSTRIAL ENGINES - V10.0.0
-==================================
-Industrial Lead Hunter (1,000 Site CX Network Optimization)
-Universal Outreach Machine (Dynamic injection and history logging)
-"""
+
 import os
 import random
 import re

@@ -4,8 +4,9 @@ from datetime import datetime
 
 class User(UserMixin, db.Model):
     """
-    Industrial User Identity Model.
-    Supports Enterprise Outreach Templates and Buy Box logic.
+    Industrial User Security Architecture.
+    Includes persistent outreach templates and buy box logic.
+    Encryption: Utilizes Industrial Scrypt Hashing via Werkzeug.
     """
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
@@ -14,9 +15,11 @@ class User(UserMixin, db.Model):
     smtp_email = db.Column(db.String(150), nullable=True)
     smtp_password = db.Column(db.String(150), nullable=True)
     
-    # Universal Outreach Script Template
-    email_template = db.Column(db.Text, default="Hi [[NAME]], I saw your property at [[ADDRESS]]. I am a cash buyer looking for a quick close. Let me know if you are interested.")
+    # Universal Outreach Template (Dynamically Editable via UI)
+    email_template = db.Column(db.Text, default="Hi [[NAME]], I am a local cash buyer. I saw your listing at [[ADDRESS]] and would like to make an offer. Can we talk today?")
     
+    google_token = db.Column(db.Text, nullable=True)
+    stripe_customer_id = db.Column(db.String(100), nullable=True)
     subscription_status = db.Column(db.String(50), default='free')
     subscription_end = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -37,7 +40,7 @@ class User(UserMixin, db.Model):
 class Lead(db.Model):
     """
     Industrial Lead Data Model.
-    Maintains extraction telemetry and property owner identifiers.
+    Supports thousand-lead volumes and high-density property metadata.
     """
     __tablename__ = 'leads'
     id = db.Column(db.Integer, primary_key=True)
@@ -55,11 +58,11 @@ class Lead(db.Model):
     occupancy_status = db.Column(db.String(50))
     link = db.Column(db.String(500))
     status = db.Column(db.String(50), default="New")
-    source = db.Column(db.String(100), default="Industrial Network")
+    source = db.Column(db.String(100), default="Industrial Scraper")
     emailed_count = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # TitanFinance Valuation Logic
+    # TitanFinance Proprietary Valuation Metrics
     arv_estimate = db.Column(db.Integer)
     repair_estimate = db.Column(db.Integer)
     max_allowable_offer = db.Column(db.Integer)
@@ -67,7 +70,7 @@ class Lead(db.Model):
 class OutreachLog(db.Model):
     """
     Industrial Historical Sent Message Model.
-    Surgical Fix: Column 'address' included to fix the 500 error.
+    Tracks all automated outreach missions for production visibility.
     """
     __tablename__ = 'outreach_logs'
     id = db.Column(db.Integer, primary_key=True)
@@ -76,10 +79,10 @@ class OutreachLog(db.Model):
     address = db.Column(db.String(255))
     message = db.Column(db.Text)
     sent_at = db.Column(db.DateTime, default=datetime.utcnow)
-    status = db.Column(db.String(50), default="Delivered")
+    status = db.Column(db.String(50), default="Success")
 
 class Video(db.Model):
-    """ AI Marketing Media Model. """
+    """ Industrial Media Asset Model. """
     __tablename__ = 'videos'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)

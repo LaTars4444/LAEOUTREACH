@@ -1,52 +1,49 @@
+"""
+TITAN INDUSTRIAL ENGINES - V10.0.0
+==================================
+Industrial Lead Hunter (1,000 Site CX Network Optimization)
+Universal Outreach Machine (Dynamic injection and history logging)
+"""
 import os
 import random
-import time
 import re
 import smtplib
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 from googleapiclient.discovery import build
 from extensions import db
 from models import Lead, OutreachLog, User
+from utils import human_stealth_delay
 
-# GLOBAL LOG BUFFER
+# Production Log Buffer
 SYSTEM_LOGS = []
 
 def log_activity(message):
-    """
-    Industrial Standard Logger.
-    SURGICAL FIX: Uses indexed format to prevent Render crash.
-    """
+    """ Surgical Indexed Formatting to prevent Render crashes. """
     try:
         timestamp = time.strftime("%H:%M:%S")
         log_format = "[{0}] {1}"
         entry = log_format.format(timestamp, message)
         print(entry)
         SYSTEM_LOGS.insert(0, entry)
-        if len(SYSTEM_LOGS) > 2000: SYSTEM_LOGS.pop()
-    except:
-        pass
+        if len(SYSTEM_LOGS) > 3000: SYSTEM_LOGS.pop()
+    except: pass
 
-def task_scraper(app, user_id, city, state, api_key, cx, keywords):
+def task_scraper(app, user_id, city, state, api_key, cx):
     """
-    ENGINE: INDUSTRIAL LEAD HUNTER.
-    - Optimized for 1,000+ site CX Network.
-    - Deep Pagination (start=1-100).
-    - Randomized stealth delays (5-15s).
+    INDUSTRIAL LEAD HUNTER.
+    Optimized for 1,000+ Site CX Clusters.
     """
     with app.app_context():
         log_activity("🚀 MISSION STARTED: Lead Extraction in {0}, {1}".format(city, state))
-        
         try:
             service = build("customsearch", "v1", developerKey=api_key)
+            keywords = ["must sell", "motivated seller", "cash only", "inherited property", "probate", "divorce"]
             total_added = 0
-            selected_kws = random.sample(keywords, 15)
             
-            for kw in selected_kws:
-                for start in range(1, 101, 10):
-                    # ENTERPRISE CX NETWORK QUERY
+            for kw in keywords:
+                for start in range(1, 101, 10): # 100 deep results per combinatorial
                     query_format = '"{0}" "{1}" {2}'
                     q = query_format.format(city, state, kw)
                     
@@ -62,10 +59,10 @@ def task_scraper(app, user_id, city, state, api_key, cx, keywords):
                         
                         if phones or emails:
                             if not Lead.query.filter_by(link=link, submitter_id=user_id).first():
-                                # Property Name Extraction
+                                # Property Name Heuristic
                                 owner_name = "Property Owner"
-                                name_match = re.search(r'by\s+([a-zA-Z]+)', snippet)
-                                if name_match: owner_name = name_match.group(1).capitalize()
+                                name_find = re.search(r'by\s+([a-zA-Z]+)', snippet)
+                                if name_find: owner_name = name_find.group(1).capitalize()
 
                                 lead = Lead(
                                     submitter_id=user_id,
@@ -73,7 +70,7 @@ def task_scraper(app, user_id, city, state, api_key, cx, keywords):
                                     name=owner_name,
                                     phone=phones[0] if phones else "None",
                                     email=emails[0] if emails else "None",
-                                    source="Network ({0})".format(kw),
+                                    source="Industrial Network",
                                     link=link
                                 )
                                 db.session.add(lead)
@@ -81,19 +78,14 @@ def task_scraper(app, user_id, city, state, api_key, cx, keywords):
                                 log_activity("✅ HARVESTED: {0}".format(lead.address[:25]))
                     
                     db.session.commit()
-                    time.sleep(random.uniform(5, 15)) # STEALTH DELAY
+                    human_stealth_delay() 
             
-            log_activity("🏁 MISSION COMPLETE: indexed {0} Leads.".format(total_added))
+            log_activity("🏁 MISSION COMPLETE: indexed {0} leads.".format(total_added))
         except Exception as e:
             log_activity("⚠️ SCRAPE FAULT: {0}".format(str(e)))
 
 def task_emailer(app, user_id, subject, body, groq_client):
-    """
-    ENGINE: OUTREACH AUTOMATION MACHINE.
-    - Constant Universal Script Injection ([[ADDRESS]], [[NAME]]).
-    - Historical SENT history logging.
-    - Human stealth delays (5-15s).
-    """
+    """ INDUSTRIAL OUTREACH MACHINE - UNIVERSAL SCRIPT LOGIC """
     with app.app_context():
         user = User.query.get(user_id)
         leads = Lead.query.filter(Lead.submitter_id == user_id, Lead.email.contains('@')).all()
@@ -101,43 +93,33 @@ def task_emailer(app, user_id, subject, body, groq_client):
         
         try:
             server = smtplib.SMTP("smtp.gmail.com", 587)
-            server.starttls()
-            server.login(user.smtp_email, user.smtp_password)
+            server.starttls(); server.login(user.smtp_email, user.smtp_password)
             
-            count = 0
             for lead in leads:
                 try:
-                    final_body = body if body and len(body) > 10 else user.email_template
-                    final_body = final_body.replace("[[ADDRESS]]", lead.address)
-                    final_body = final_body.replace("[[NAME]]", lead.name)
+                    # Dynamic Injection logic
+                    msg_body = body if body and len(body) > 10 else user.email_template
+                    msg_body = msg_body.replace("[[ADDRESS]]", lead.address).replace("[[NAME]]", lead.name)
                     
-                    if groq_client and len(final_body) < 15:
+                    # AI personalization override via Groq
+                    if groq_client and len(msg_body) < 15:
                         chat = groq_client.chat.completions.create(
-                            messages=[{"role": "user", "content": "Write a short cash offer for {0}.".format(lead.address)}],
+                            messages=[{"role": "user", "content": "Write a short cash buyer email for {0}.".format(lead.address)}],
                             model="llama-3.3-70b-versatile"
                         )
-                        final_body = chat.choices[0].message.content
+                        msg_body = chat.choices[0].message.content
 
-                    msg = MIMEMultipart()
-                    msg['From'] = user.smtp_email
-                    msg['To'] = lead.email
-                    msg['Subject'] = subject.replace("[[ADDRESS]]", lead.address)
-                    msg.attach(MIMEText(final_body, 'plain'))
+                    msg = MIMEMultipart(); msg['From'] = user.smtp_email; msg['To'] = lead.email; msg['Subject'] = subject.replace("[[ADDRESS]]", lead.address)
+                    msg.attach(MIMEText(msg_body, 'plain')); server.send_message(msg)
                     
-                    server.send_message(msg)
+                    # Log History
+                    out = OutreachLog(user_id=user_id, recipient_email=lead.email, address=lead.address, message=msg_body[:250])
+                    db.session.add(out); lead.emailed_count += 1; lead.status = "Contacted"; db.session.commit()
                     
-                    # LOG HISTORY
-                    outlog = OutreachLog(user_id=user_id, address=lead.address, recipient_email=lead.email, message=final_body[:200], status="Sent")
-                    db.session.add(outlog)
-                    lead.emailed_count += 1; lead.status = "Contacted"; db.session.commit()
-                    
-                    count += 1
                     log_activity("📨 SENT: {0}".format(lead.email))
-                    time.sleep(random.uniform(5, 15)) # ANTI-SPAM
+                    human_stealth_delay()
                 except Exception as e:
                     log_activity("⚠️ SMTP FAIL ({0}): {1}".format(lead.email, str(e)))
-            
-            server.quit()
-            log_activity("🏁 BLAST COMPLETE: {0} Delivered.".format(count))
+            server.quit(); log_activity("🏁 BLAST COMPLETE.")
         except Exception as e:
             log_activity("❌ SMTP CRITICAL ERROR: {0}".format(str(e)))

@@ -1,7 +1,10 @@
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
 
-# Industrial standard initialization to prevent circular dependencies
+# Industrial Persistence Layer
 db = SQLAlchemy()
+
+# Industrial Session Management
 login_manager = LoginManager()
 login_manager.login_view = 'login'
+login_manager.login_message_category = 'info'

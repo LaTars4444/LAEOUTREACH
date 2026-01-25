@@ -1,58 +1,38 @@
-{% extends "base.html" %}
-{% block content %}
-<div class="row">
-    <div class="col-md-12">
-        <div class="p-5 mb-4 bg-white rounded-3 shadow-sm">
-            <h1>Welcome, {{ user.email }}</h1>
-            <p>Status: <span class="badge bg-info text-dark">{{ user.subscription_status|upper }}</span></p>
-            {% if user.subscription_end %}
-                <p class="small text-muted">Access valid until: {{ user.subscription_end }}</p>
-            {% endif %}
-        </div>
-    </div>
-</div>
-
-<div class="row">
-    <!-- AI TOOL -->
-    <div class="col-md-6 mb-4">
-        <div class="card h-100">
-            <div class="card-header bg-dark text-white">Titan AI Generator</div>
-            <div class="card-body">
-                <textarea id="aiInput" class="form-control mb-2" placeholder="Describe the property or email scenario..."></textarea>
-                <button onclick="runAI('email')" class="btn btn-outline-primary btn-sm">Generate Email</button>
-                <button onclick="runAI('listing')" class="btn btn-outline-success btn-sm">Generate Listing</button>
-                <div id="aiResult" class="mt-3 p-3 bg-light border rounded d-none"></div>
+<!-- Inside the AI Hub Tab -->
+<div class="tab-pane fade" id="chat">
+    <div class="card shadow-sm">
+        <div class="card-header bg-info text-white fw-bold">💬 TITAN AI INTELLIGENCE</div>
+        <div class="card-body overflow-auto" id="ai-log" style="height:350px;">
+            <!-- WELCOME MESSAGE (RESTORED) -->
+            <div class="alert alert-secondary small shadow-sm">
+                <b>Titan AI:</b> Welcome to the Intelligence Hub. I am synchronized with your industrial leads. I can analyze property data or draft cash-offer strategies. How can I assist you today?
             </div>
         </div>
-    </div>
-
-    <!-- EMAIL MACHINE -->
-    <div class="col-md-6 mb-4">
-        <div class="card h-100">
-            <div class="card-header bg-danger text-white">Outreach Machine</div>
-            <div class="card-body">
-                <p>Status: {% if user.google_token %} <span class="text-success">Connected</span> {% else %} <span class="text-danger">Disconnected</span> {% endif %}</p>
-                <!-- Simplified UI for demo -->
-                <button class="btn btn-secondary" disabled>Connect Gmail (Config Required)</button>
+        <div class="card-footer">
+            <div class="input-group shadow-sm">
+                <input id="ai-prompt" class="form-control" placeholder="Ask Engine anything...">
+                <button onclick="askAI()" class="btn btn-info text-white fw-bold">Execute Prompt</button>
             </div>
         </div>
     </div>
 </div>
 
-<script>
-async function runAI(type) {
-    const input = document.getElementById('aiInput').value;
-    const resultBox = document.getElementById('aiResult');
-    resultBox.classList.remove('d-none');
-    resultBox.innerText = "Generating...";
-    
-    const res = await fetch('/ai/generate', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({type: type, input: input})
-    });
-    const data = await res.json();
-    resultBox.innerText = data.result || data.error;
-}
-</script>
-{% endblock %}
+<!-- History Pane -->
+<div class="tab-pane fade" id="history">
+    <div class="card shadow-sm border-0">
+        <div class="card-body p-4">
+            <h5 class="fw-bold mb-3">Previous Sent Messages History</h5>
+            <div class="list-group">
+                {% for item in history %}
+                <div class="list-group-item">
+                    <h6 class="mb-1 fw-bold">{{ item.address }}</h6>
+                    <p class="mb-1 small">{{ item.message }}...</p>
+                    <small class="text-primary">Sent to: {{ item.recipient_email }}</small>
+                </div>
+                {% else %}
+                <p class="text-center py-4 text-muted">No outreach history found.</p>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>

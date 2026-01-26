@@ -8,12 +8,18 @@ from tasks import google_search_hunter
 from werkzeug.security import generate_password_hash, check_password_hash
 
 def create_app():
-    # Use absolute path for static folder to avoid relative path issues on Render
-    static_folder_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'dist'))
-    print(f"Serving static files from: {static_folder_path}")
+    # Calculate the path to the 'dist' folder relative to this file
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    static_folder_path = os.path.join(base_dir, 'dist')
     
-    if not os.path.exists(static_folder_path):
-        print("WARNING: Static folder 'dist' does not exist! Run 'npm run build' first.")
+    print(f"Base Directory: {base_dir}")
+    print(f"Expected Static Folder: {static_folder_path}")
+    
+    if os.path.exists(static_folder_path):
+        print(f"✅ Static folder found: {static_folder_path}")
+        print(f"Contents: {os.listdir(static_folder_path)}")
+    else:
+        print(f"❌ WARNING: Static folder NOT found at {static_folder_path}")
 
     app = Flask(__name__, static_folder=static_folder_path, static_url_path='')
     

@@ -2,16 +2,22 @@
 # Exit on error
 set -o errexit
 
-# 1. Install Node dependencies and Build React Frontend
-echo "🚀 Building React Frontend..."
+echo "🚀 Installing Node dependencies..."
 npm install
+
+echo "🚀 Building React Frontend..."
 npm run build
 
-# Verify build output
-echo "📂 Listing dist folder contents:"
-ls -la dist
+echo "📂 Verifying build output..."
+if [ -d "dist" ]; then
+  echo "✅ 'dist' folder created successfully."
+  ls -la dist
+else
+  echo "❌ ERROR: 'dist' folder NOT found!"
+  ls -la
+  exit 1
+fi
 
-# 2. Install Python dependencies
 echo "🐍 Installing Python Dependencies..."
 pip install -r requirements.txt
 

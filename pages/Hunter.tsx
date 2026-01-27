@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/Store';
 import { USA_STATES } from '../utils/constants';
-import { Search, Loader2, MapPin, AlertTriangle, Lock, CheckCircle2, DollarSign, Activity, Wifi, Settings } from 'lucide-react';
+import { Search, Loader2, MapPin, AlertTriangle, Lock, CheckCircle2, DollarSign, Activity, Wifi, Settings, ExternalLink } from 'lucide-react';
 import Terminal from '../components/Terminal';
 import { useNavigate, Link } from 'react-router-dom';
 
@@ -91,10 +91,10 @@ const Hunter: React.FC = () => {
 
       if (data.error) {
         addLog(`❌ TEST FAILED: ${data.error.message}`, "error");
-        console.error("FULL GOOGLE ERROR:", data); // Log full object to browser console
+        console.error("FULL GOOGLE ERROR:", data);
         
         if (data.error.code === 403) {
-           addLog("👉 403 ERROR: Usually means 'Custom Search API' is not enabled in Library OR Billing is inactive.", "warning");
+           addLog("👉 403 ERROR: API not enabled or Billing issue.", "warning");
         }
       } else {
         addLog("✅ CONNECTION SUCCESSFUL: API is responding correctly.", "success");
@@ -137,11 +137,10 @@ const Hunter: React.FC = () => {
         if (data.error) {
           // Detailed Error Logging
           addLog(`❌ API ERROR (${data.error.code}): ${data.error.message}`, 'error');
-          
-          if (data.error.details) {
-             data.error.details.forEach((detail: any) => {
-               addLog(`   ↳ Reason: ${detail.reason} - ${detail.domain}`, 'warning');
-             });
+          console.error("GOOGLE API ERROR DETAILS:", data); // Log to browser console for inspection
+
+          if (data.error.message.includes("access")) {
+             addLog("👉 ACTION: Double check that 'Custom Search API' is enabled in the correct project.", "warning");
           }
           
           throw new Error(data.error.message);
@@ -283,6 +282,18 @@ const Hunter: React.FC = () => {
             <div>Strategy: <span className="text-emerald-400">{user?.bbStrategy || 'Any'}</span></div>
             <div>Condition: <span className="text-emerald-400">{user?.bbCondition || 'Any'}</span></div>
           </div>
+        </div>
+
+        {/* Helper Link for API Error */}
+        <div className="text-center mb-4">
+           <a 
+             href="https://console.cloud.google.com/apis/library/customsearch.googleapis.com" 
+             target="_blank" 
+             rel="noreferrer"
+             className="text-xs text-blue-400 hover:text-blue-300 flex items-center justify-center gap-1"
+           >
+             <ExternalLink size={10} /> Check API Status in Google Cloud
+           </a>
         </div>
 
         <button

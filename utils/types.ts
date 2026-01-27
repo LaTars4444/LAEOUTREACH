@@ -1,4 +1,4 @@
-export interface User {
+xport interface User {
   id: number;
   email: string;
   subscriptionStatus: 'free' | 'weekly' | 'monthly' | 'lifetime';

@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Crosshair, Send, Settings, LogOut, ShieldCheck, BoxSelect, Lock, Cpu } from 'lucide-react';
+import { LayoutDashboard, Crosshair, Send, Settings, LogOut, ShieldCheck, BoxSelect, Lock, Cpu, PlusCircle } from 'lucide-react';
 import { useStore } from '../context/Store';
 
 const Sidebar: React.FC = () => {
@@ -9,6 +9,7 @@ const Sidebar: React.FC = () => {
   const navItems = [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard', locked: false },
     { to: '/hunter', icon: Crosshair, label: 'Lead Hunter', locked: !user?.hasAiAccess },
+    { to: '/leads/add', icon: PlusCircle, label: 'Add Lead', locked: false },
     { to: '/ai-terminal', icon: Cpu, label: 'AI Terminal', locked: !user?.hasAiAccess },
     { to: '/buy-box', icon: BoxSelect, label: 'Buy Box', locked: false },
     { to: '/campaigns', icon: Send, label: 'Outreach', locked: !user?.hasEmailAccess },

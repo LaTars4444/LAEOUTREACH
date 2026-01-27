@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/Store';
-import { Send, Save, Edit3, CheckCircle } from 'lucide-react';
+import { Send, Save, Edit3, CheckCircle, AlertTriangle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const Campaigns: React.FC = () => {
@@ -49,8 +49,31 @@ const Campaigns: React.FC = () => {
     for (let i = 0; i < targets.length; i++) {
       const lead = targets[i];
       
-      // Simulate delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // 1. Attempt Real Backend Send
+      try {
+        const response = await fetch('/api/send-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: lead.email,
+            subject: subject.replace('[[ADDRESS]]', lead.address),
+            body: template.replace('[[ADDRESS]]', lead.address).replace('[[NAME]]', lead.name),
+            smtp_email: user.smtpEmail,
+            smtp_password: user.smtpPassword
+          })
+        });
+
+        if (response.ok) {
+           addLog(`📨 SENT (SMTP): ${lead.email}`, "success");
+        } else {
+           // Fallback to simulation if backend route is missing (404) or fails
+           throw new Error("Backend route not found or failed");
+        }
+      } catch (e) {
+        // 2. Fallback to Simulation with Warning
+        addLog(`⚠️ SIMULATION (Backend Offline): Logged send to ${lead.email}`, "warning");
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Fake delay
+      }
 
       const finalBody = template
         .replace('[[ADDRESS]]', lead.address)
@@ -64,8 +87,6 @@ const Campaigns: React.FC = () => {
         sentAt: new Date().toISOString(),
         status: 'Sent'
       });
-
-      addLog(`📨 SENT: ${lead.email}`, "success");
     }
 
     addLog("🏁 OUTREACH COMPLETE.", "info");
@@ -123,6 +144,14 @@ const Campaigns: React.FC = () => {
 
         <div className="bg-slate-800 border border-slate-700 rounded-lg p-6 shadow-lg">
           <h3 className="text-lg font-bold text-white mb-4">Campaign Controls</h3>
+          
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded p-3 mb-4 flex items-start gap-2">
+             <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={16} />
+             <div className="text-xs text-amber-200">
+               <strong>Backend Connection Required:</strong> If the Python backend is not running or the <code>/api/send-email</code> route is missing, this will default to <strong>Simulation Mode</strong> (logs only, no real emails sent).
+             </div>
+          </div>
+
           <div className="flex items-center justify-between bg-slate-900 p-4 rounded mb-6">
             <div>
               <div className="text-sm text-slate-400">Target Audience</div>

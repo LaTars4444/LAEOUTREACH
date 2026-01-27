@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { User, Lead, OutreachLog, SystemLog, Investor, DEFAULT_TEMPLATE } from '../utils/types';
+import { User, Lead, OutreachLog, SystemLog, Investor, DEFAULT_TEMPLATE } from '../types';
 import { MOCK_LEADS_START } from '../utils/constants';
 
 interface StoreContextType {
@@ -10,7 +10,6 @@ interface StoreContextType {
   outreachHistory: OutreachLog[];
   isAuthenticated: boolean;
   login: (email: string) => void;
-  register: (email: string) => void;
   logout: () => void;
   addLog: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
   addLead: (lead: Lead) => void;
@@ -157,18 +156,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  const register = (email: string) => {
-    const isAdmin = ADMIN_EMAILS.includes(email.toLowerCase());
-    const newUser = createNewUser(email, isAdmin);
-    setUser(newUser);
-    addLog(`New Operator Registered: ${email}`, 'success');
-    if (isAdmin) {
-      addLog(`👑 ADMIN RECOGNIZED: Privileges Auto-Granted.`, 'success');
-    } else {
-      addLog(`⚠️ ACCOUNT CREATED: Please activate your trial in the dashboard.`, 'warning');
-    }
-  };
-
   const logout = () => {
     setUser(null);
     addLog('Session terminated.');
@@ -260,7 +247,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       outreachHistory,
       isAuthenticated: !!user,
       login,
-      register,
       logout,
       addLog,
       addLead,

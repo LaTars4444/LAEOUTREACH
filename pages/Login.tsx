@@ -1,23 +1,17 @@
 import React, { useState } from 'react';
 import { useStore } from '../context/Store';
-import { ShieldCheck, Lock, Mail, ArrowRight, Home, DollarSign, Briefcase, UserPlus } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { ShieldCheck, Lock, Mail, ArrowRight, Home, DollarSign, Briefcase } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 const Login: React.FC = () => {
-  const { login, register } = useStore();
-  const navigate = useNavigate();
-  const [isRegistering, setIsRegistering] = useState(false);
+  const { login } = useStore();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (email && password) {
-      if (isRegistering) {
-        register(email);
-      } else {
-        login(email);
-      }
+      login(email);
     }
   };
 
@@ -31,16 +25,14 @@ const Login: React.FC = () => {
 
       <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-8 z-10">
         
-        {/* Operator Login/Register Section */}
+        {/* Operator Login Section */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-2xl overflow-hidden flex flex-col">
           <div className="p-8 text-center border-b border-slate-800 bg-slate-900/50">
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-emerald-500/10 mb-4 border border-emerald-500/20">
               <ShieldCheck className="text-emerald-500" size={32} />
             </div>
             <h1 className="text-2xl font-bold text-white tracking-tight">Titan Enterprise</h1>
-            <p className="text-slate-500 text-sm mt-2 font-mono">
-              {isRegistering ? 'NEW OPERATOR REGISTRATION' : 'OPERATOR ACCESS V12.0.0'}
-            </p>
+            <p className="text-slate-500 text-sm mt-2 font-mono">OPERATOR ACCESS V12.0.0</p>
           </div>
 
           <form onSubmit={handleSubmit} className="p-8 space-y-6 flex-1 flex flex-col justify-center">
@@ -78,25 +70,9 @@ const Login: React.FC = () => {
               type="submit"
               className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20 group mt-4"
             >
-              {isRegistering ? 'CREATE ACCOUNT' : 'INITIALIZE SYSTEM'}
+              INITIALIZE SYSTEM
               <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />
             </button>
-
-            <div className="text-center pt-4 border-t border-slate-800 mt-4">
-              <button 
-                type="button"
-                onClick={() => setIsRegistering(!isRegistering)}
-                className="text-sm font-bold text-purple-400 hover:text-purple-300 transition-colors flex items-center justify-center gap-2 w-full py-2 rounded hover:bg-purple-500/10"
-              >
-                {isRegistering ? (
-                  <>Already have an account? Login</>
-                ) : (
-                  <>
-                    <UserPlus size={16} /> New Operator? Register Here
-                  </>
-                )}
-              </button>
-            </div>
           </form>
           
           <div className="px-8 py-4 bg-slate-950 border-t border-slate-800 text-center">

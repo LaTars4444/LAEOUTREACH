@@ -7,7 +7,6 @@ import Hunter from './pages/Hunter';
 import Campaigns from './pages/Campaigns';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
-import Register from './pages/Register';
 import BuyBox from './pages/BuyBox';
 import Sell from './pages/Sell';
 import JoinBuyersList from './pages/JoinBuyersList';
@@ -18,12 +17,11 @@ import ManualLead from './pages/ManualLead';
 const AppLayout: React.FC = () => {
   const { isAuthenticated } = useStore();
 
-  // Public Routes (Login, Register, Sell, Join Buyers List)
+  // Public Routes (Login, Sell, Join Buyers List)
   if (!isAuthenticated) {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
         <Route path="/sell" element={<Sell />} />
         <Route path="/investors" element={<JoinBuyersList />} />
         <Route path="*" element={<Navigate to="/login" />} />

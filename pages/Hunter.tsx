@@ -29,6 +29,7 @@ const Hunter: React.FC = () => {
     addLog(`🚀 MISSION STARTED: Lead Extraction in ${selectedCity}, ${selectedState}`, 'info');
 
     // --- REAL GOOGLE SEARCH API INTEGRATION ---
+    // These are pulled from Render Environment Variables at build time
     const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
     const cx = process.env.GOOGLE_SEARCH_CX;
 
@@ -56,6 +57,11 @@ const Hunter: React.FC = () => {
         const data = await response.json();
 
         if (data.error) {
+          // Specific handling for the "API not enabled" error
+          if (data.error.message.includes("does not have the access")) {
+            addLog("⚠️ GOOGLE CLOUD ERROR: The 'Custom Search API' is not enabled in your Google Cloud Console.", "warning");
+            addLog("👉 ACTION REQUIRED: Go to Google Cloud Console > APIs & Services > Enable APIs > Search for 'Custom Search API' and enable it.", "info");
+          }
           throw new Error(data.error.message);
         }
 

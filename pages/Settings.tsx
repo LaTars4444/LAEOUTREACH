@@ -1,16 +1,53 @@
 import React, { useState } from 'react';
 import { useStore } from '../context/Store';
-import { Save, Server, Shield, AlertTriangle, Info, ExternalLink, Cpu, CheckCircle2, CreditCard, XCircle, Search } from 'lucide-react';
+import { Save, Server, Shield, AlertTriangle, Info, ExternalLink, Cpu, CheckCircle2, CreditCard, XCircle, Search, Activity, AlertCircle } from 'lucide-react';
 
 const Settings: React.FC = () => {
   const { user, updateUser, addLog, cancelSubscription } = useStore();
   const [smtpEmail, setSmtpEmail] = useState(user?.smtpEmail || '');
   const [smtpPassword, setSmtpPassword] = useState(user?.smtpPassword || '');
   const [groqApiKey, setGroqApiKey] = useState(user?.groqApiKey || '');
+  
+  // Diagnostic State
+  const [testKey, setTestKey] = useState('');
+  const [testCx, setTestCx] = useState('');
+  const [testStatus, setTestStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [testResult, setTestResult] = useState('');
 
   const handleSave = () => {
     updateUser({ smtpEmail, smtpPassword, groqApiKey });
     addLog("⚙️ SETTINGS: Keys updated securely.", "success");
+  };
+
+  const runGoogleDiagnostic = async () => {
+    if (!testKey || !testCx) {
+      setTestResult("Please enter both API Key and CX ID to test.");
+      setTestStatus('error');
+      return;
+    }
+
+    setTestStatus('loading');
+    setTestResult("Pinging Google Cloud...");
+
+    try {
+      const url = `https://www.googleapis.com/customsearch/v1?key=${testKey}&cx=${testCx}&q=test`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.error) {
+        setTestStatus('error');
+        setTestResult(`ERROR ${data.error.code}: ${data.error.message}`);
+      } else if (data.items) {
+        setTestStatus('success');
+        setTestResult("SUCCESS! API is active and returning results. Update your Render Environment Variables with these keys.");
+      } else {
+        setTestStatus('error');
+        setTestResult("Connected, but no results returned. Check your CX (Search Engine) configuration.");
+      }
+    } catch (e: any) {
+      setTestStatus('error');
+      setTestResult(`NETWORK ERROR: ${e.message}`);
+    }
   };
 
   // Check for system key
@@ -77,51 +114,53 @@ const Settings: React.FC = () => {
             </div>
           </div>
 
-          {/* Simulation Warning */}
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 flex items-start gap-3">
-            <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={20} />
-            <div className="text-sm text-amber-200">
-              <strong className="block mb-1 text-amber-400">Frontend Simulation Mode Active</strong>
-              <p className="mb-2">
-                This application is currently running in a serverless React environment. 
-                <strong> Emails will be logged as "Sent" in the dashboard but will not actually leave the system.</strong>
-              </p>
-              <p>
-                To enable live SMTP transmission, this frontend must be connected to the Titan Python Backend API.
-              </p>
-            </div>
-          </div>
-
-          {/* Google Search API Section (New) */}
+          {/* Google Search API Diagnostic Tool */}
           <div className="space-y-4">
             <div className="flex items-center justify-between border-b border-slate-700 pb-2">
               <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-                <Search size={16} /> Google Search API
+                <Search size={16} /> Google API Diagnostic
               </h3>
             </div>
             
-            <div className="bg-slate-900 p-4 rounded border border-slate-700 space-y-3">
+            <div className="bg-slate-900 p-4 rounded border border-slate-700 space-y-4">
               <div className="text-xs text-slate-400">
-                These keys are managed in your Render Environment Variables. Use the links below to generate new ones if you are experiencing errors.
+                Paste your keys here to test them immediately. This does not save them to the app; it only tests connectivity.
               </div>
-              <div className="flex flex-col gap-2">
-                <a 
-                  href="https://console.cloud.google.com/apis/credentials" 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-2 hover:underline"
-                >
-                  <ExternalLink size={14} /> 1. Generate New API Key (Google Cloud)
-                </a>
-                <a 
-                  href="https://programmablesearchengine.google.com/controlpanel/all" 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-2 hover:underline"
-                >
-                  <ExternalLink size={14} /> 2. Get Search Engine ID (CX)
-                </a>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <input 
+                  type="text" 
+                  value={testKey}
+                  onChange={(e) => setTestKey(e.target.value)}
+                  placeholder="Paste API Key (AIza...)"
+                  className="bg-slate-800 border border-slate-600 rounded p-2 text-white text-sm outline-none focus:border-blue-500"
+                />
+                <input 
+                  type="text" 
+                  value={testCx}
+                  onChange={(e) => setTestCx(e.target.value)}
+                  placeholder="Paste CX ID (0123...)"
+                  className="bg-slate-800 border border-slate-600 rounded p-2 text-white text-sm outline-none focus:border-blue-500"
+                />
               </div>
+
+              <button 
+                onClick={runGoogleDiagnostic}
+                disabled={testStatus === 'loading'}
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded text-sm font-bold flex items-center justify-center gap-2 transition-colors"
+              >
+                {testStatus === 'loading' ? <Activity className="animate-spin" size={14} /> : <Activity size={14} />}
+                Test Live Connection
+              </button>
+
+              {testResult && (
+                <div className={`p-3 rounded text-xs font-mono break-all ${
+                  testStatus === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                }`}>
+                  {testStatus === 'success' ? <CheckCircle2 size={14} className="inline mr-2" /> : <AlertCircle size={14} className="inline mr-2" />}
+                  {testResult}
+                </div>
+              )}
             </div>
           </div>
 
@@ -199,10 +238,6 @@ const Settings: React.FC = () => {
                 placeholder={hasSystemKey ? "Using System Key (Override Optional)" : "gsk_..."}
                 className="w-full bg-slate-900 border border-slate-700 rounded p-3 text-white focus:border-purple-500 outline-none font-mono"
               />
-              <p className="text-xs text-slate-500 mt-2">
-                Required for the AI Terminal to function with live data. 
-                {hasSystemKey ? " A system-level key is currently active from the Render environment." : " If left empty, the terminal will run in simulation mode."}
-              </p>
             </div>
           </div>
 

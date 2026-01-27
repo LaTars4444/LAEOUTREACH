@@ -8,7 +8,7 @@ const AiTerminal: React.FC = () => {
   const navigate = useNavigate();
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<{ role: 'user' | 'ai' | 'system'; content: string }[]>([
-    { role: 'system', content: 'Titan Intelligence Module v12.0.0 initialized. Connected to Llama-3-70b-8192.' }
+    { role: 'system', content: 'Titan Intelligence Module v12.0.0 initialized. Connected to Llama-3.3-70b-Versatile.' }
   ]);
   const [isThinking, setIsThinking] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -40,8 +40,6 @@ const AiTerminal: React.FC = () => {
 
     try {
       // PRIORITY: User Setting -> Render Env Var -> Empty
-      // Note: In Vite/CRA, process.env.GROQ_API_KEY is replaced at build time.
-      // We use a safe check to avoid runtime errors if process is undefined.
       let systemKey = '';
       try {
         systemKey = process.env.GROQ_API_KEY || '';
@@ -65,7 +63,7 @@ const AiTerminal: React.FC = () => {
               ...history.filter(h => h.role !== 'system').map(h => ({ role: h.role === 'ai' ? 'assistant' : 'user', content: h.content })),
               { role: "user", content: userMsg }
             ],
-            model: "llama3-70b-8192",
+            model: "llama-3.3-70b-versatile",
             temperature: 0.7
           })
         });

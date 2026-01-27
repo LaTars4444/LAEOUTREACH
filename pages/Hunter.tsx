@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/Store';
 import { USA_STATES } from '../utils/constants';
-import { Search, Loader2, MapPin, AlertTriangle, Lock, CheckCircle2 } from 'lucide-react';
+import { Search, Loader2, MapPin, AlertTriangle, Lock, CheckCircle2, DollarSign, Activity, Wifi } from 'lucide-react';
 import Terminal from '../components/Terminal';
 import { useNavigate } from 'react-router-dom';
 
@@ -11,6 +11,7 @@ const Hunter: React.FC = () => {
   const [selectedState, setSelectedState] = useState<string>('');
   const [selectedCity, setSelectedCity] = useState<string>('');
   const [isHunting, setIsHunting] = useState(false);
+  const [queriesRun, setQueriesRun] = useState(0);
 
   // Paywall Check
   useEffect(() => {
@@ -22,14 +23,40 @@ const Hunter: React.FC = () => {
 
   if (!user?.hasAiAccess) return null;
 
+  const handleTestConnection = async () => {
+    const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
+    const cx = process.env.GOOGLE_SEARCH_CX;
+    
+    addLog("📡 TESTING CONNECTION...", "info");
+    addLog(`🔑 KEY: ${apiKey ? 'Detected' : 'Missing'} | CX: ${cx ? 'Detected' : 'Missing'}`, 'info');
+
+    if (!apiKey || !cx) return;
+
+    try {
+      const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=test`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.error) {
+        addLog(`❌ TEST FAILED: ${data.error.message}`, "error");
+        if (data.error.message.includes("access")) {
+           addLog("👉 CHECK 1: Is 'Custom Search API' enabled in Cloud Console?", "warning");
+           addLog("👉 CHECK 2: Does the API Key have 'Application Restrictions'? If set to 'IP addresses', it will FAIL in the browser. Set to 'None' or 'HTTP Referrers'.", "warning");
+        }
+      } else {
+        addLog("✅ CONNECTION SUCCESSFUL: API is responding correctly.", "success");
+      }
+    } catch (e: any) {
+      addLog(`❌ NETWORK ERROR: ${e.message}`, "error");
+    }
+  };
+
   const handleHunt = async () => {
     if (!selectedState || !selectedCity) return;
 
     setIsHunting(true);
     addLog(`🚀 MISSION STARTED: Lead Extraction in ${selectedCity}, ${selectedState}`, 'info');
 
-    // --- REAL GOOGLE SEARCH API INTEGRATION ---
-    // These are pulled from Render Environment Variables at build time
     const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
     const cx = process.env.GOOGLE_SEARCH_CX;
 
@@ -50,24 +77,18 @@ const Hunter: React.FC = () => {
     try {
       for (const query of queries) {
         addLog(`🔎 SCANNING: ${query}`, 'info');
+        setQueriesRun(prev => prev + 1);
         
-        // Fetch from Google API
         const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(query)}`;
         const response = await fetch(url);
         const data = await response.json();
 
         if (data.error) {
-          // Specific handling for the "API not enabled" error
-          if (data.error.message.includes("does not have the access")) {
-            addLog("⚠️ GOOGLE CLOUD ERROR: The 'Custom Search API' is not enabled in your Google Cloud Console.", "warning");
-            addLog("👉 ACTION REQUIRED: Go to Google Cloud Console > APIs & Services > Enable APIs > Search for 'Custom Search API' and enable it.", "info");
-          }
           throw new Error(data.error.message);
         }
 
         if (data.items && data.items.length > 0) {
           for (const item of data.items) {
-            // Basic parsing of the snippet to find potential contact info (Regex)
             const snippet = (item.snippet || "") + " " + (item.title || "");
             const phoneMatch = snippet.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
             const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
@@ -75,22 +96,20 @@ const Hunter: React.FC = () => {
             const newLead = {
               id: Date.now() + Math.random(),
               address: item.title || "Unknown Address",
-              name: "Property Owner", // Hard to extract name reliably without deeper scraping
+              name: "Property Owner",
               phone: phoneMatch ? phoneMatch[0] : "None",
               email: emailMatch ? emailMatch[0] : "None",
               status: 'New' as const,
               source: 'Google Search API',
               emailedCount: 0,
               createdAt: new Date().toISOString(),
-              arvEstimate: 0, // Requires manual or AI analysis
+              arvEstimate: 0,
               repairEstimate: 0
             };
 
             addLead(newLead);
             totalFound++;
             addLog(`✅ HARVESTED: ${newLead.address.substring(0, 40)}...`, 'success');
-            
-            // Artificial delay to prevent rate limiting and simulate "work"
             await new Promise(r => setTimeout(r, 1500));
           }
         } else {
@@ -98,7 +117,7 @@ const Hunter: React.FC = () => {
         }
       }
       
-      addLog(`🏁 MISSION COMPLETE: Indexed ${totalFound} leads from live web data.`, 'info');
+      addLog(`🏁 MISSION COMPLETE: Indexed ${totalFound} leads.`, 'info');
 
     } catch (error: any) {
       addLog(`❌ API ERROR: ${error.message}`, 'error');
@@ -107,16 +126,52 @@ const Hunter: React.FC = () => {
     }
   };
 
+  // Cost Calculation
+  const freeQueries = 100;
+  const costPer1k = 5.00;
+  const estimatedCost = queriesRun > freeQueries 
+    ? ((queriesRun - freeQueries) / 1000) * costPer1k 
+    : 0;
+
   return (
     <div className="max-w-5xl mx-auto space-y-8">
       <div className="bg-slate-800 border border-slate-700 rounded-lg p-8 shadow-xl">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20">
-            <Search className="text-emerald-500" size={24} />
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20">
+              <Search className="text-emerald-500" size={24} />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-white">Lead Hunter V12</h2>
+              <p className="text-slate-400">Live Google Search API Integration</p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-2xl font-bold text-white">Lead Hunter V12</h2>
-            <p className="text-slate-400">Live Google Search API Integration</p>
+          
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={handleTestConnection}
+              className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-2 rounded border border-slate-600 flex items-center gap-2 transition-colors"
+            >
+              <Wifi size={12} /> Test Connection
+            </button>
+
+            <div className="bg-slate-900 px-4 py-2 rounded-lg border border-slate-700 flex items-center gap-4">
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1">
+                  <Activity size={10} /> Queries Today
+                </div>
+                <div className="text-white font-mono font-bold">{queriesRun} / 100 (Free)</div>
+              </div>
+              <div className="h-8 w-px bg-slate-700"></div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1">
+                  <DollarSign size={10} /> Est. Cost
+                </div>
+                <div className={`font-mono font-bold ${estimatedCost > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                  ${estimatedCost.toFixed(2)}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 

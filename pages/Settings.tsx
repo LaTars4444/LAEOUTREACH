@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useStore } from '../context/Store';
-import { Save, Server, Shield, AlertTriangle, Info, ExternalLink, Cpu, CheckCircle2, CreditCard, XCircle } from 'lucide-react';
+import { Save, Server, Shield, AlertTriangle, Info, ExternalLink, Cpu, CheckCircle2, CreditCard, XCircle, Search } from 'lucide-react';
 
 const Settings: React.FC = () => {
   const { user, updateUser, addLog, cancelSubscription } = useStore();
@@ -89,6 +89,39 @@ const Settings: React.FC = () => {
               <p>
                 To enable live SMTP transmission, this frontend must be connected to the Titan Python Backend API.
               </p>
+            </div>
+          </div>
+
+          {/* Google Search API Section (New) */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-700 pb-2">
+              <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <Search size={16} /> Google Search API
+              </h3>
+            </div>
+            
+            <div className="bg-slate-900 p-4 rounded border border-slate-700 space-y-3">
+              <div className="text-xs text-slate-400">
+                These keys are managed in your Render Environment Variables. Use the links below to generate new ones if you are experiencing errors.
+              </div>
+              <div className="flex flex-col gap-2">
+                <a 
+                  href="https://console.cloud.google.com/apis/credentials" 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-2 hover:underline"
+                >
+                  <ExternalLink size={14} /> 1. Generate New API Key (Google Cloud)
+                </a>
+                <a 
+                  href="https://programmablesearchengine.google.com/controlpanel/all" 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-2 hover:underline"
+                >
+                  <ExternalLink size={14} /> 2. Get Search Engine ID (CX)
+                </a>
+              </div>
             </div>
           </div>
 

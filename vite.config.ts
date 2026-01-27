@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     build: {
-      outDir: path.resolve(__dirname, 'dist'), // Force absolute path to root/dist
+      outDir: path.resolve(__dirname, 'dist'),
       emptyOutDir: true
     },
     define: {

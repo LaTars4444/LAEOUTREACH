@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { User, Lead, OutreachLog, SystemLog, Investor, DEFAULT_TEMPLATE } from '../types';
+import { User, Lead, OutreachLog, SystemLog, Investor, DEFAULT_TEMPLATE } from '../utils/types';
 import { MOCK_LEADS_START } from '../utils/constants';
 
 interface StoreContextType {
@@ -86,7 +86,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return { ...currentUser, hasEmailAccess: true, hasAiAccess: true };
     }
 
-    // If trial hasn't started yet, they have no access
+    // If trial hasn't started yet, they have no access (Forces them to Paywall to activate)
     if (!currentUser.trialStart) {
       return { ...currentUser, hasEmailAccess: false, hasAiAccess: false };
     }
@@ -164,6 +164,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     addLog(`New Operator Registered: ${email}`, 'success');
     if (isAdmin) {
       addLog(`👑 ADMIN RECOGNIZED: Privileges Auto-Granted.`, 'success');
+    } else {
+      addLog(`⚠️ ACCOUNT CREATED: Please activate your trial in the dashboard.`, 'warning');
     }
   };
 
@@ -181,7 +183,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const updateUser = (updates: Partial<User>) => {
-    setUser(prev => prev ? { ...prev, ...updates } : null);
+    setUser((prev: User | null) => prev ? { ...prev, ...updates } : null);
   };
 
   const recordOutreach = (log: OutreachLog) => {

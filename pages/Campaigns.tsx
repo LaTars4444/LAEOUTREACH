@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/Store';
-import { Send, Save, Edit3, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Send, Save, Edit3, CheckCircle, AlertTriangle, Server } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const Campaigns: React.FC = () => {
@@ -31,8 +31,12 @@ const Campaigns: React.FC = () => {
   };
 
   const handleBlast = async () => {
-    if (!user?.smtpEmail) {
-      addLog("❌ SMTP CRITICAL ERROR: No SMTP configuration found. Please configure Settings.", "error");
+    // 1. Determine Credentials (User Settings vs System Env)
+    const smtpEmail = user?.smtpEmail || process.env.SMTP_EMAIL;
+    const smtpPass = user?.smtpPassword || process.env.SMTP_PASSWORD;
+
+    if (!smtpEmail || !smtpPass) {
+      addLog("❌ SMTP CRITICAL ERROR: No Email/Password found in Settings OR Environment Variables.", "error");
       return;
     }
 
@@ -43,13 +47,13 @@ const Campaigns: React.FC = () => {
     }
 
     setIsSending(true);
-    addLog(`📧 BLAST STARTING: Targeting ${targets.length} potential sellers.`, "info");
+    addLog(`📧 BLAST STARTING: Targeting ${targets.length} potential sellers using ${smtpEmail}`, "info");
 
     // Simulate sending process
     for (let i = 0; i < targets.length; i++) {
       const lead = targets[i];
       
-      // 1. Attempt Real Backend Send
+      // 2. Attempt Real Backend Send
       try {
         const response = await fetch('/api/send-email', {
           method: 'POST',
@@ -58,20 +62,20 @@ const Campaigns: React.FC = () => {
             to: lead.email,
             subject: subject.replace('[[ADDRESS]]', lead.address),
             body: template.replace('[[ADDRESS]]', lead.address).replace('[[NAME]]', lead.name),
-            smtp_email: user.smtpEmail,
-            smtp_password: user.smtpPassword
+            smtp_email: smtpEmail,
+            smtp_password: smtpPass
           })
         });
 
         if (response.ok) {
            addLog(`📨 SENT (SMTP): ${lead.email}`, "success");
         } else {
-           // Fallback to simulation if backend route is missing (404) or fails
-           throw new Error("Backend route not found or failed");
+           const errData = await response.json();
+           throw new Error(errData.error || "Backend route failed");
         }
-      } catch (e) {
-        // 2. Fallback to Simulation with Warning
-        addLog(`⚠️ SIMULATION (Backend Offline): Logged send to ${lead.email}`, "warning");
+      } catch (e: any) {
+        // 3. Fallback to Simulation with Warning
+        addLog(`⚠️ SEND FAILED (${lead.email}): ${e.message}. Logging locally only.`, "warning");
         await new Promise(resolve => setTimeout(resolve, 1000)); // Fake delay
       }
 
@@ -99,6 +103,9 @@ const Campaigns: React.FC = () => {
       .replace('[[ADDRESS]]', previewLead.address)
       .replace('[[NAME]]', previewLead.name);
   };
+
+  // Check if system creds are active
+  const hasSystemCreds = !!process.env.SMTP_EMAIL;
 
   return (
     <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -145,12 +152,21 @@ const Campaigns: React.FC = () => {
         <div className="bg-slate-800 border border-slate-700 rounded-lg p-6 shadow-lg">
           <h3 className="text-lg font-bold text-white mb-4">Campaign Controls</h3>
           
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded p-3 mb-4 flex items-start gap-2">
-             <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={16} />
-             <div className="text-xs text-amber-200">
-               <strong>Backend Connection Required:</strong> If the Python backend is not running or the <code>/api/send-email</code> route is missing, this will default to <strong>Simulation Mode</strong> (logs only, no real emails sent).
+          {hasSystemCreds ? (
+             <div className="bg-emerald-500/10 border border-emerald-500/20 rounded p-3 mb-4 flex items-start gap-2">
+               <Server className="text-emerald-500 shrink-0 mt-0.5" size={16} />
+               <div className="text-xs text-emerald-200">
+                 <strong>System SMTP Active:</strong> Using credentials from Render Environment Variables ({process.env.SMTP_EMAIL}).
+               </div>
              </div>
-          </div>
+          ) : (
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded p-3 mb-4 flex items-start gap-2">
+               <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={16} />
+               <div className="text-xs text-amber-200">
+                 <strong>No System SMTP:</strong> Please configure email in Settings or add SMTP_EMAIL to Render Env Vars.
+               </div>
+            </div>
+          )}
 
           <div className="flex items-center justify-between bg-slate-900 p-4 rounded mb-6">
             <div>

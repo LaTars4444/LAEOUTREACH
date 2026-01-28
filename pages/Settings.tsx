@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useStore } from '../context/Store';
-import { Save, Server, Shield, AlertTriangle, Info, ExternalLink, Cpu, CheckCircle2, CreditCard, XCircle, Search, Activity, AlertCircle } from 'lucide-react';
+import { Save, Server, Shield, AlertTriangle, Info, ExternalLink, Cpu, CheckCircle2, CreditCard, XCircle, Search, Activity, AlertCircle, HelpCircle } from 'lucide-react';
 
 const Settings: React.FC = () => {
   const { user, updateUser, addLog, cancelSubscription } = useStore();
@@ -118,49 +118,93 @@ const Settings: React.FC = () => {
           <div className="space-y-4">
             <div className="flex items-center justify-between border-b border-slate-700 pb-2">
               <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-                <Search size={16} /> Google API Diagnostic
+                <Search size={16} /> Google API Setup & Diagnostic
               </h3>
             </div>
             
-            <div className="bg-slate-900 p-4 rounded border border-slate-700 space-y-4">
-              <div className="text-xs text-slate-400">
-                Paste your keys here to test them immediately. This does not save them to the app; it only tests connectivity.
-              </div>
+            <div className="bg-slate-900 p-4 rounded border border-slate-700 space-y-6">
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <input 
-                  type="text" 
-                  value={testKey}
-                  onChange={(e) => setTestKey(e.target.value)}
-                  placeholder="Paste API Key (AIza...)"
-                  className="bg-slate-800 border border-slate-600 rounded p-2 text-white text-sm outline-none focus:border-blue-500"
-                />
-                <input 
-                  type="text" 
-                  value={testCx}
-                  onChange={(e) => setTestCx(e.target.value)}
-                  placeholder="Paste CX ID (0123...)"
-                  className="bg-slate-800 border border-slate-600 rounded p-2 text-white text-sm outline-none focus:border-blue-500"
-                />
+              {/* Setup Wizard */}
+              <div className="space-y-3">
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Step 1: Enable The Service</div>
+                <a 
+                  href="https://console.cloud.google.com/apis/library/customsearch.googleapis.com" 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="block bg-slate-800 hover:bg-slate-700 border border-slate-600 p-3 rounded text-sm text-blue-400 flex items-center justify-between transition-colors"
+                >
+                  <span>1. Enable "Custom Search API" (Click Enable Button)</span>
+                  <ExternalLink size={14} />
+                </a>
+                <p className="text-[10px] text-slate-500 px-1">
+                  If you see "Manage", it is already enabled. If you see "Enable", click it. This is the #1 cause of errors.
+                </p>
               </div>
 
-              <button 
-                onClick={runGoogleDiagnostic}
-                disabled={testStatus === 'loading'}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded text-sm font-bold flex items-center justify-center gap-2 transition-colors"
-              >
-                {testStatus === 'loading' ? <Activity className="animate-spin" size={14} /> : <Activity size={14} />}
-                Test Live Connection
-              </button>
-
-              {testResult && (
-                <div className={`p-3 rounded text-xs font-mono break-all ${
-                  testStatus === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
-                }`}>
-                  {testStatus === 'success' ? <CheckCircle2 size={14} className="inline mr-2" /> : <AlertCircle size={14} className="inline mr-2" />}
-                  {testResult}
+              <div className="space-y-3">
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Step 2: Get Credentials</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <a 
+                    href="https://console.cloud.google.com/apis/credentials" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="block bg-slate-800 hover:bg-slate-700 border border-slate-600 p-3 rounded text-sm text-blue-400 flex items-center justify-between transition-colors"
+                  >
+                    <span>2. Create API Key</span>
+                    <ExternalLink size={14} />
+                  </a>
+                  <a 
+                    href="https://programmablesearchengine.google.com/controlpanel/all" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="block bg-slate-800 hover:bg-slate-700 border border-slate-600 p-3 rounded text-sm text-blue-400 flex items-center justify-between transition-colors"
+                  >
+                    <span>3. Get Search Engine ID (CX)</span>
+                    <ExternalLink size={14} />
+                  </a>
                 </div>
-              )}
+              </div>
+
+              <div className="border-t border-slate-700 my-4"></div>
+
+              {/* Tester */}
+              <div className="space-y-4">
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Step 3: Test Connection</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <input 
+                    type="text" 
+                    value={testKey}
+                    onChange={(e) => setTestKey(e.target.value)}
+                    placeholder="Paste API Key (AIza...)"
+                    className="bg-slate-800 border border-slate-600 rounded p-2 text-white text-sm outline-none focus:border-blue-500"
+                  />
+                  <input 
+                    type="text" 
+                    value={testCx}
+                    onChange={(e) => setTestCx(e.target.value)}
+                    placeholder="Paste CX ID (0123...)"
+                    className="bg-slate-800 border border-slate-600 rounded p-2 text-white text-sm outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <button 
+                  onClick={runGoogleDiagnostic}
+                  disabled={testStatus === 'loading'}
+                  className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded text-sm font-bold flex items-center justify-center gap-2 transition-colors"
+                >
+                  {testStatus === 'loading' ? <Activity className="animate-spin" size={14} /> : <Activity size={14} />}
+                  Test Live Connection
+                </button>
+
+                {testResult && (
+                  <div className={`p-3 rounded text-xs font-mono break-all ${
+                    testStatus === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  }`}>
+                    {testStatus === 'success' ? <CheckCircle2 size={14} className="inline mr-2" /> : <AlertCircle size={14} className="inline mr-2" />}
+                    {testResult}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 

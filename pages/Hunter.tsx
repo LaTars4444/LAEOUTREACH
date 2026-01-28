@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/Store';
 import { USA_STATES } from '../utils/constants';
-import { Search, Loader2, MapPin, AlertTriangle, Lock, CheckCircle2, DollarSign, Activity, Wifi, Settings, ExternalLink } from 'lucide-react';
+import { Search, Loader2, MapPin, AlertTriangle, Lock, CheckCircle2, DollarSign, Activity, Wifi, Settings, ExternalLink, Key } from 'lucide-react';
 import Terminal from '../components/Terminal';
 import { useNavigate, Link } from 'react-router-dom';
 
@@ -12,6 +12,11 @@ const Hunter: React.FC = () => {
   const [selectedCity, setSelectedCity] = useState<string>('');
   const [isHunting, setIsHunting] = useState(false);
   const [queriesRun, setQueriesRun] = useState(0);
+  
+  // Manual Override State
+  const [manualKey, setManualKey] = useState('');
+  const [manualCx, setManualCx] = useState('');
+  const [showManual, setShowManual] = useState(false);
 
   // Paywall Check
   useEffect(() => {
@@ -69,20 +74,24 @@ const Hunter: React.FC = () => {
   };
 
   const handleTestConnection = async () => {
-    const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
-    const cx = process.env.GOOGLE_SEARCH_CX;
+    // Use manual keys if provided, otherwise fallback to env
+    const apiKey = manualKey || process.env.GOOGLE_SEARCH_API_KEY;
+    const cx = manualCx || process.env.GOOGLE_SEARCH_CX;
     
     addLog("📡 TESTING CONNECTION...", "info");
     
     if (apiKey) {
       const start = apiKey.substring(0, 4);
       const end = apiKey.substring(apiKey.length - 4);
-      addLog(`🔑 DEBUG: Using Key: ${start}...${end}`, 'info');
+      addLog(`🔑 DEBUG: Using Key: ${start}...${end} ${manualKey ? '(Manual)' : '(Env)'}`, 'info');
     } else {
-      addLog("❌ DEBUG: No API Key found in Environment Variables.", "error");
+      addLog("❌ DEBUG: No API Key found.", "error");
     }
 
-    if (!apiKey || !cx) return;
+    if (!apiKey || !cx) {
+      addLog("❌ ERROR: Missing API Key or CX ID.", "error");
+      return;
+    }
 
     try {
       const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=test`;
@@ -110,11 +119,11 @@ const Hunter: React.FC = () => {
     setIsHunting(true);
     addLog(`🚀 MISSION STARTED: Lead Extraction in ${selectedCity}, ${selectedState}`, 'info');
 
-    const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
-    const cx = process.env.GOOGLE_SEARCH_CX;
+    const apiKey = manualKey || process.env.GOOGLE_SEARCH_API_KEY;
+    const cx = manualCx || process.env.GOOGLE_SEARCH_CX;
 
     if (!apiKey || !cx) {
-      addLog("❌ CONFIG ERROR: Google Search API Key or CX ID missing in Environment Variables.", "error");
+      addLog("❌ CONFIG ERROR: Google Search API Key or CX ID missing.", "error");
       setIsHunting(false);
       return;
     }
@@ -137,10 +146,9 @@ const Hunter: React.FC = () => {
         if (data.error) {
           // Detailed Error Logging
           addLog(`❌ API ERROR (${data.error.code}): ${data.error.message}`, 'error');
-          console.error("GOOGLE API ERROR DETAILS:", data); // Log to browser console for inspection
-
+          
           if (data.error.message.includes("access")) {
-             addLog("👉 ACTION: Double check that 'Custom Search API' is enabled in the correct project.", "warning");
+             addLog("👉 ACTION: Click the link below to enable the API in Google Cloud.", "warning");
           }
           
           throw new Error(data.error.message);
@@ -234,6 +242,41 @@ const Hunter: React.FC = () => {
           </div>
         </div>
 
+        {/* Manual Key Override Section */}
+        <div className="mb-6">
+          <button 
+            onClick={() => setShowManual(!showManual)}
+            className="text-xs text-slate-500 hover:text-white flex items-center gap-1 mb-2"
+          >
+            <Key size={12} /> {showManual ? 'Hide' : 'Show'} Manual Key Override (Debug)
+          </button>
+          
+          {showManual && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-900/50 p-4 rounded border border-slate-700">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Manual API Key</label>
+                <input 
+                  type="text" 
+                  value={manualKey}
+                  onChange={(e) => setManualKey(e.target.value)}
+                  placeholder="AIza..."
+                  className="w-full bg-slate-950 border border-slate-600 rounded p-2 text-white text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Manual CX ID</label>
+                <input 
+                  type="text" 
+                  value={manualCx}
+                  onChange={(e) => setManualCx(e.target.value)}
+                  placeholder="0123..."
+                  className="w-full bg-slate-950 border border-slate-600 rounded p-2 text-white text-xs"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-2">Target State</label>
@@ -287,7 +330,7 @@ const Hunter: React.FC = () => {
         {/* Helper Link for API Error */}
         <div className="text-center mb-4">
            <a 
-             href="https://console.cloud.google.com/apis/library/customsearch.googleapis.com" 
+             href="https://console.cloud.google.com/marketplace/product/google/customsearch.googleapis.com" 
              target="_blank" 
              rel="noreferrer"
              className="text-xs text-blue-400 hover:text-blue-300 flex items-center justify-center gap-1"

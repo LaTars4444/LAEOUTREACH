@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/Store';
 import { USA_STATES } from '../utils/constants';
-import { Search, Loader2, MapPin, AlertTriangle, Lock, CheckCircle2, DollarSign, Activity, Wifi, Settings, ExternalLink, Key } from 'lucide-react';
+import { Search, Loader2, MapPin, AlertTriangle, Lock, CheckCircle2, DollarSign, Activity, Wifi, Settings, ExternalLink, Key, ShieldAlert } from 'lucide-react';
 import Terminal from '../components/Terminal';
 import { useNavigate, Link } from 'react-router-dom';
 
@@ -200,6 +200,12 @@ const Hunter: React.FC = () => {
     ? ((queriesRun - freeQueries) / 1000) * costPer1k 
     : 0;
 
+  // System Status Check
+  const envKey = process.env.GOOGLE_SEARCH_API_KEY;
+  const envCx = process.env.GOOGLE_SEARCH_CX;
+  const statusColor = envKey && envCx ? 'text-emerald-400' : 'text-red-400';
+  const statusText = envKey && envCx ? 'READY' : 'MISSING KEYS';
+
   return (
     <div className="max-w-5xl mx-auto space-y-8">
       <div className="bg-slate-800 border border-slate-700 rounded-lg p-8 shadow-xl">
@@ -210,7 +216,10 @@ const Hunter: React.FC = () => {
             </div>
             <div>
               <h2 className="text-2xl font-bold text-white">Lead Hunter V12</h2>
-              <p className="text-slate-400">Live Google Search API Integration</p>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-slate-400">System Status:</span>
+                <span className={`font-mono font-bold ${statusColor}`}>{statusText}</span>
+              </div>
             </div>
           </div>
           
@@ -260,7 +269,7 @@ const Hunter: React.FC = () => {
                   value={manualKey}
                   onChange={(e) => setManualKey(e.target.value)}
                   placeholder="AIza..."
-                  className="w-full bg-slate-950 border border-slate-600 rounded p-2 text-white text-xs"
+                  className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-xs"
                 />
               </div>
               <div>
@@ -270,7 +279,7 @@ const Hunter: React.FC = () => {
                   value={manualCx}
                   onChange={(e) => setManualCx(e.target.value)}
                   placeholder="0123..."
-                  className="w-full bg-slate-950 border border-slate-600 rounded p-2 text-white text-xs"
+                  className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-xs"
                 />
               </div>
             </div>
@@ -328,14 +337,22 @@ const Hunter: React.FC = () => {
         </div>
 
         {/* Helper Link for API Error */}
-        <div className="text-center mb-4">
+        <div className="text-center mb-4 flex justify-center gap-4">
            <a 
-             href="https://console.cloud.google.com/marketplace/product/google/customsearch.googleapis.com" 
+             href="https://developers.google.com/custom-search/v1/introduction#try_it_now" 
              target="_blank" 
              rel="noreferrer"
              className="text-xs text-blue-400 hover:text-blue-300 flex items-center justify-center gap-1"
            >
-             <ExternalLink size={10} /> Check API Status in Google Cloud
+             <ExternalLink size={10} /> Test Key in Google API Explorer
+           </a>
+           <a 
+             href="https://console.cloud.google.com/apis/credentials" 
+             target="_blank" 
+             rel="noreferrer"
+             className="text-xs text-blue-400 hover:text-blue-300 flex items-center justify-center gap-1"
+           >
+             <ShieldAlert size={10} /> Check Key Restrictions
            </a>
         </div>
 

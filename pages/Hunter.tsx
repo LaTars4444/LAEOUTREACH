@@ -1,7 +1,8 @@
 
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/Store';
 import { USA_STATES, STREET_NAMES, STREET_TYPES } from '../utils/constants';
-import { Search, Loader2, MapPin, AlertTriangle, Lock, Database, Zap, Clipboard, ArrowRight, CheckCircle2, Plus } from 'lucide-react';
+import { Search, Loader2, MapPin, AlertTriangle, Lock, Database, Zap, Clipboard, Plus } from 'lucide-react';
 import Terminal from '../components/Terminal';
 import { useNavigate } from 'react-router-dom';
 import { Lead } from '../types';
@@ -481,5 +482,3 @@ const Hunter: React.FC = () => {
 };
 
 export default Hunter;
-]]></content>
-</change>

@@ -1,19 +1,29 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
+type Lead = {
+  id: string;
+  address: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  status: string;
+  source: string;
+  createdAt: string;
+};
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+
   const { state, city, linkepyEnabled } = req.body;
 
-  if (!state || !city) {
-    return res.status(400).json({ error: 'Missing city or state' });
-  }
+  if (!state || !city) return res.status(400).json({ error: 'Missing city or state' });
 
   const ATTOM_API_KEY = process.env.ATTOM_API_KEY;
+  const LINKEPY_API_KEY = process.env.LINKEPY_API_KEY;
 
-  if (!ATTOM_API_KEY) {
-    return res.status(500).json({ error: 'ATTOM API Key not configured' });
-  }
+  if (!ATTOM_API_KEY) return res.status(500).json({ error: 'ATTOM API key missing in Render env' });
 
-  let leadsAdded = 0;
+  let leads: Lead[] = [];
 
   try {
     // --- 1) Fetch properties from ATTOM ---
@@ -23,20 +33,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
     const attomData = await attomRes.json();
 
-    const leads = [];
-
     for (const prop of attomData.properties || []) {
       const ownerName = prop.owner?.name || "Property Owner";
-      let email = null;
-      let phone = null;
+      let email: string | null = null;
+      let phone: string | null = null;
 
-      // --- 2) Optional Linkepy enrichment ---
-      if (linkepyEnabled) {
+      // --- 2) Linkepy enrichment ---
+      if (linkepyEnabled && LINKEPY_API_KEY) {
         try {
           const enrichRes = await fetch('https://api.linkepy.com/api/enrichment/email-lookup', {
             method: 'POST',
             headers: {
-              'Authorization': `Bearer ${process.env.LINKEPY_API_KEY}`,
+              'Authorization': `Bearer ${LINKEPY_API_KEY}`,
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
@@ -49,13 +57,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           email = enrichData?.email || null;
           phone = enrichData?.phone || null;
         } catch (err) {
-          console.warn('Linkepy enrichment failed', err);
+          console.warn('Linkepy enrichment failed:', err);
         }
       }
 
-      // --- 3) Build lead object ---
-      const newLead = {
-        id: Date.now() + Math.random(),
+      const newLead: Lead = {
+        id: Date.now() + Math.random() + '',
         address: prop.address?.line1 || "Unknown Address",
         name: ownerName,
         email,
@@ -65,16 +72,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         createdAt: new Date().toISOString(),
       };
 
+      // --- Save to dashboard/store ---
       leads.push(newLead);
-      leadsAdded++;
-
-      // TODO: Save to your database/dashboard
-      // Example: await saveLeadToDashboard(newLead)
+      // Example: await addLeadToDashboard(newLead);
     }
 
-    res.status(200).json({ message: 'Leads harvested', leadsAdded });
+    res.status(200).json({ leadsAdded: leads.length, leads });
   } catch (err: any) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message || 'Unknown server error' });
   }
 }

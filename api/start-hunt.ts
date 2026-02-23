@@ -1,21 +1,25 @@
-export async function startHunt(req: any, res: any) {
+export default async function startHunt(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   const { state, city, linkepyEnabled } = req.body;
+
   if (!state || !city) return res.status(400).json({ error: 'Missing city or state' });
 
   const ATTOM_API_KEY = process.env.ATTOM_API_KEY;
   const LINKEPY_API_KEY = process.env.LINKEPY_API_KEY;
+
   if (!ATTOM_API_KEY) return res.status(500).json({ error: 'ATTOM API key missing' });
 
   let leads: any[] = [];
 
   try {
-    // Use global fetch (Node 18+)
     const attomRes = await fetch(
       `https://api.gateway.attomdata.com/propertyapi/v1.0.0/property/address?state=${state}&city=${city}&pageSize=50`,
-      { headers: { apikey: ATTOM_API_KEY } }
+      {
+        headers: { apikey: ATTOM_API_KEY }
+      }
     );
+
     const attomData = await attomRes.json();
 
     for (const prop of attomData.properties || []) {
@@ -56,21 +60,9 @@ export async function startHunt(req: any, res: any) {
     }
 
     res.status(200).json({ leadsAdded: leads.length, leads });
+
   } catch (err: any) {
+    console.error(err);
     res.status(500).json({ error: err.message || 'Server error' });
-  }
-}
-🔹 TypeScript Fix
-
-TypeScript in Node 20+ sometimes doesn’t know fetch exists. Add this to your tsconfig.json:
-
-{
-  "compilerOptions": {
-    "lib": ["ESNext", "DOM"], // include DOM lib for fetch types
-    "module": "ESNext",
-    "target": "ES2022",
-    "moduleResolution": "Node",
-    "strict": true,
-    "esModuleInterop": true
   }
 }

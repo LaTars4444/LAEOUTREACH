@@ -1,17 +1,6 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
+import fetch from 'node-fetch'; // Needed if using Node environment on Render
 
-type Lead = {
-  id: string;
-  address: string;
-  name: string;
-  email: string | null;
-  phone: string | null;
-  status: string;
-  source: string;
-  createdAt: string;
-};
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export async function startHunt(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   const { state, city, linkepyEnabled } = req.body;
@@ -21,12 +10,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ATTOM_API_KEY = process.env.ATTOM_API_KEY;
   const LINKEPY_API_KEY = process.env.LINKEPY_API_KEY;
 
-  if (!ATTOM_API_KEY) return res.status(500).json({ error: 'ATTOM API key missing in Render env' });
+  if (!ATTOM_API_KEY) return res.status(500).json({ error: 'ATTOM API key missing' });
 
-  let leads: Lead[] = [];
+  let leads: any[] = [];
 
   try {
-    // --- 1) Fetch properties from ATTOM ---
+    // 1️⃣ Fetch properties from ATTOM
     const attomUrl = `https://api.gateway.attomdata.com/propertyapi/v1.0.0/property/address?state=${state}&city=${city}&pageSize=50`;
     const attomRes = await fetch(attomUrl, {
       headers: { 'apikey': ATTOM_API_KEY }
@@ -38,7 +27,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let email: string | null = null;
       let phone: string | null = null;
 
-      // --- 2) Linkepy enrichment ---
+      // 2️⃣ Linkepy enrichment
       if (linkepyEnabled && LINKEPY_API_KEY) {
         try {
           const enrichRes = await fetch('https://api.linkepy.com/api/enrichment/email-lookup', {
@@ -61,25 +50,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
       }
 
-      const newLead: Lead = {
-        id: Date.now() + Math.random() + '',
+      const newLead = {
+        id: Date.now() + Math.random(),
         address: prop.address?.line1 || "Unknown Address",
         name: ownerName,
         email,
         phone,
         status: 'New',
         source: 'ATTOM',
-        createdAt: new Date().toISOString(),
+        createdAt: new Date().toISOString()
       };
 
-      // --- Save to dashboard/store ---
       leads.push(newLead);
-      // Example: await addLeadToDashboard(newLead);
+      // Optionally, save to dashboard here if needed
     }
 
     res.status(200).json({ leadsAdded: leads.length, leads });
   } catch (err: any) {
     console.error(err);
-    res.status(500).json({ error: err.message || 'Unknown server error' });
+    res.status(500).json({ error: err.message || 'Server error' });
   }
 }
